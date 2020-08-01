@@ -17,7 +17,6 @@ int main(int argc, char * argv[]) {
   if(listen(server, 0)) { perror("listen()"); exit(EXIT_FAILURE); }
   struct sockaddr_in client_addr;
   uint8_t buffer[4096];
-
   while(true) {
     socklen_t client_addr_len = sizeof(struct sockaddr_in);
     int client = accept(server, (struct sockaddr *)&client_addr, &client_addr_len); if(client == -1) { perror("accept()"); exit(EXIT_FAILURE); }
@@ -35,9 +34,11 @@ int main(int argc, char * argv[]) {
       ssize_t length = strlen(buffer);
       ssize_t sent = send(client, buffer, length, 0); if(sent != length) { if(sent == -1) perror("send()"); else fprintf(stderr, "send(): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); }
     } else {
+
       // receive
       ssize_t length = recv(client, &buffer, 4096, 0);
       if(length == -1) { perror("recv()"); exit(EXIT_FAILURE); }
+      if(length == 4096) { perror("recv() didn't expect to fill buffer"); exit(EXIT_FAILURE); }
 
       // reply
       strcpy(buffer, "HTTP/1.1 200 OK\r\n\r\nHello, World!\r\n");
