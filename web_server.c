@@ -5,6 +5,12 @@
 #include <stdbool.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <sys/sendfile.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+
+#define HTTP_404_HEADER "HTTP/1.1 404 Not Found\r\nContent-Type:text/html;charset=utf-8\r\n\r\n"
 
 int main(int argc, char * argv[]) {
   // TODO port arg // NOTE: for privileged ports, sudo setcap 'cap_net_bind_service=+ep' /path/to/program
@@ -18,21 +24,21 @@ int main(int argc, char * argv[]) {
   struct sockaddr_in client_addr;
   uint8_t buffer[4096];
   while(true) {
-    socklen_t client_addr_len = sizeof(struct sockaddr_in);
-    int client = accept(server, (struct sockaddr *)&client_addr, &client_addr_len); if(client == -1) { perror("accept()"); exit(EXIT_FAILURE); }
+    int client = accept(server, (struct sockaddr *)&client_addr, &(socklen_t){sizeof(struct sockaddr_in)}); if(client == -1) { perror("accept()"); exit(EXIT_FAILURE); }
 
     // allow only the usual private IPv4 addresses
     uint8_t * ip = (uint8_t *)&client_addr.sin_addr.s_addr;
-    printf("client_address: %u.%u.%u.%u\n", ip[0], ip[1], ip[2], ip[3]);
+    printf("ACCESS client_address: %u.%u.%u.%u\n", ip[0], ip[1], ip[2], ip[3]);
     bool allowed_ip = false;
     allowed_ip |= ip[0] == 192 && ip[1] == 168;
     allowed_ip |= ip[0] == 127 && ip[1] == 0 && ip[2] == 0 && ip[3] == 1;
     // TODO if traffic from the internet/tor, turn on HTTPS/AUTH and turn server off on multi failed attempts
     if(!allowed_ip) {
-      // TODO how to behave exactly like if there was no server?
-      strcpy(buffer, "HTTP/1.1 200 OK\r\n\r\nYou suck.\r\n");
-      ssize_t length = strlen(buffer);
-      ssize_t sent = send(client, buffer, length, 0); if(sent != length) { if(sent == -1) perror("send()"); else fprintf(stderr, "send(): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); }
+      // TODO would it be possible to behave exactly like if there was no server? filter ip with SO_ATTACH_BPF?
+      { ssize_t sent = send(client, HTTP_404_HEADER, sizeof(HTTP_404_HEADER) - 1, MSG_MORE); if(sent != sizeof(HTTP_404_HEADER) - 1) { if(sent == -1) perror("send()"); else fprintf(stderr, "send(): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
+      int file = open("404.html", O_RDONLY); if(file == -1) { perror("open(404.html)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(404.html)"); exit(EXIT_FAILURE); }
+      { ssize_t sent = sendfile(client, file, NULL, file_stat.st_size); if(sent != file_stat.st_size) { if(sent == -1) perror("send()"); else fprintf(stderr, "send(): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
+      if(close(file)) { perror("close(404.html)"); exit(EXIT_FAILURE); }
     } else {
 
       // receive
