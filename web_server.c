@@ -11,6 +11,51 @@
 #include <fcntl.h>
 
 #define HTTP_404_HEADER "HTTP/1.1 404 Not Found\r\nContent-Type:text/html;charset=utf-8\r\n\r\n"
+#define HTTP_404_HEADER_LEN (sizeof(HTTP_404_HEADER) - 1)
+
+uint32_t hash_djb2(const char * s) {
+  uint32_t hash = 5381;
+  while(*s) hash = ((hash << 5) + hash) + *s++;
+  return hash;
+}
+
+#define hash_djb2_css 193488718
+#define hash_djb2_js 5863522
+#define hash_djb2_html 2090341082
+#define hash_djb2_png 193502698
+#define hash_djb2_webp 2090863443
+#define hash_djb2_jpg 193496230
+#define hash_djb2_jpeg 2090408331
+#define hash_djb2_svg 193506229
+#define hash_djb2_epub 2090229169
+#define hash_djb2_mobi 2090514956
+#define hash_djb2_mp4 193499446
+#define hash_djb2_ttf 193507251
+#define hash_djb2_py 5863726
+#define hash_djb2_ 5381
+
+bool send_static_header(int client, const char * ext) {
+  const char * mime;
+  switch(hash_djb2(ext)) {
+    case hash_djb2_css: mime = "text/css"; break;
+    case hash_djb2_js: mime = "application/javascript"; break;
+    case hash_djb2_html: mime = "text/html;charset=utf-8"; break;
+    case hash_djb2_png: mime = "image/png"; break;
+    case hash_djb2_webp: mime = "image/webp"; break;
+    case hash_djb2_jpg:
+    case hash_djb2_jpeg: mime = "image/jpeg"; break;
+    case hash_djb2_svg: mime = "image/svg+xml"; break;
+    case hash_djb2_epub: mime = "application/epub+zip"; break;
+    case hash_djb2_mobi: mime = "application/x-mobipocket-ebook"; break;
+    case hash_djb2_mp4: mime = "video/mp4"; break;
+    case hash_djb2_ttf: mime = "application/x-font-ttf"; break;
+    default: return false;
+  }
+  char buffer[96];
+  size_t length = sprintf(buffer, "HTTP/1.1 200 OK\r\nContent-Type:%s\r\n\r\n", mime);
+  ssize_t sent = send(client, buffer, length, MSG_MORE); if(sent != length) { if(sent == -1) perror("send(send_static_header)"); else fprintf(stderr, "send(send_static_header(%s)): couldn't send whole message, sent only %zu.\n", ext, sent); exit(EXIT_FAILURE); }
+  return true;
+}
 
 int main(int argc, char * argv[]) {
   // TODO port arg // NOTE: for privileged ports, sudo setcap 'cap_net_bind_service=+ep' /path/to/program
@@ -35,16 +80,14 @@ int main(int argc, char * argv[]) {
     // TODO if traffic from the internet/tor, turn on HTTPS/AUTH and turn server off on multi failed attempts
     if(!allowed_ip) {
       // TODO would it be possible to behave exactly like if there was no server? filter ip with SO_ATTACH_BPF?
-      { ssize_t sent = send(client, HTTP_404_HEADER, sizeof(HTTP_404_HEADER) - 1, MSG_MORE); if(sent != sizeof(HTTP_404_HEADER) - 1) { if(sent == -1) perror("send()"); else fprintf(stderr, "send(): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
+      { ssize_t sent = send(client, HTTP_404_HEADER, HTTP_404_HEADER_LEN, MSG_MORE); if(sent != HTTP_404_HEADER_LEN) { if(sent == -1) perror("send()"); else fprintf(stderr, "send(): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
       int file = open("404.html", O_RDONLY); if(file == -1) { perror("open(404.html)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(404.html)"); exit(EXIT_FAILURE); }
-      { ssize_t sent = sendfile(client, file, NULL, file_stat.st_size); if(sent != file_stat.st_size) { if(sent == -1) perror("send()"); else fprintf(stderr, "send(): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
+      { ssize_t sent = sendfile(client, file, NULL, file_stat.st_size); if(sent != file_stat.st_size) { if(sent == -1) perror("sendfile()"); else fprintf(stderr, "sendfile(): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
       if(close(file)) { perror("close(404.html)"); exit(EXIT_FAILURE); }
     } else {
 
       // receive
-      ssize_t length = recv(client, &buffer, 4096, 0);
-      if(length == -1) { perror("recv()"); exit(EXIT_FAILURE); }
-      if(length == 4096) { perror("recv() didn't expect to fill buffer"); exit(EXIT_FAILURE); }
+      ssize_t length = recv(client, &buffer, 4096, 0); if(length == -1) { perror("recv()"); exit(EXIT_FAILURE); } if(length == 4096) { perror("recv() didn't expect to fill buffer"); exit(EXIT_FAILURE); }
 
       // reply
       strcpy(buffer, "HTTP/1.1 200 OK\r\n\r\nHello, World!\r\n");
