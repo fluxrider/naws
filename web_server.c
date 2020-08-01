@@ -1,3 +1,4 @@
+// Copyright 2020 David Lareau. This program is free software under the terms of the GPL-3.0-or-later.
 #include <unistd.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -67,7 +68,7 @@ int main(int argc, char * argv[]) {
   if(bind(server, (const struct sockaddr *)&(struct sockaddr_in){AF_INET, htons(port), {INADDR_ANY}}, sizeof(struct sockaddr_in))) { perror("bind()"); exit(EXIT_FAILURE); }
   if(listen(server, 0)) { perror("listen()"); exit(EXIT_FAILURE); }
   struct sockaddr_in client_addr;
-  uint8_t buffer[4096];
+  uint8_t buffer[8192];
   while(true) {
     int client = accept(server, (struct sockaddr *)&client_addr, &(socklen_t){sizeof(struct sockaddr_in)}); if(client == -1) { perror("accept()"); exit(EXIT_FAILURE); }
 
@@ -77,29 +78,85 @@ int main(int argc, char * argv[]) {
     bool allowed_ip = false;
     allowed_ip |= ip[0] == 192 && ip[1] == 168;
     allowed_ip |= ip[0] == 127 && ip[1] == 0 && ip[2] == 0 && ip[3] == 1;
+    if(!allowed_ip) goto encountered_problem;
+    // TODO would it be possible to behave exactly like if there was no server? filter ip with SO_ATTACH_BPF?
     // TODO if traffic from the internet/tor, turn on HTTPS/AUTH and turn server off on multi failed attempts
-    if(!allowed_ip) {
-      // TODO would it be possible to behave exactly like if there was no server? filter ip with SO_ATTACH_BPF?
+
+    // receive
+    ssize_t length = recv(client, &buffer, 8192, 0); if(length == -1) { perror("recv()"); exit(EXIT_FAILURE); }
+    if(length == 8192) { fprintf(stderr, "recv() didn't expect to fill buffer"); exit(EXIT_FAILURE); } // NOTE: I rely on this
+    buffer[length] = '\0';
+    // printf("%s\n", buffer);
+    if(length < 4 || strncmp(buffer, "GET ", 4)) goto encountered_problem;
+
+    // handle GET
+    // get uri
+    const char * uri = &buffer[4];
+    const char * query_string = NULL;
+    int i = 4;
+    while(buffer[i]) {
+      switch(buffer[i]) {
+        // no "/.." allowed
+        case '.':
+          if(buffer[i-1] != '/' || buffer[i+1] != '.') { i++; break; }
+        // unexpected end of line
+        case '\r':
+        case '\n':
+          fprintf(stderr, "error parsing request-uri\n%s", buffer);
+          goto encountered_problem;
+        case ' ':
+          buffer[i] = '\0';
+          break;
+        case '?':
+          if(!query_string) {
+            buffer[i] = '\0';
+            query_string = &buffer[i+1];
+          }
+          // fall through
+        default:
+          i++;
+      }
+    }
+    if(!query_string) query_string = "";
+    printf("uri: %s\n", uri);
+    printf("query: %s\n", query_string);
+    if(uri[0] != '/') goto encountered_problem;
+    uri += 1;
+    
+    // figure out filename extension
+    const char * ext = strrchr(uri, '.');
+    if(!ext) ext = ""; else ext += 1;
+    if(strchr(ext, '/')) ext = "";
+    printf("ext: %s\n", ext);
+
+    // verify access of uri
+    if(access(uri, R_OK)) goto encountered_problem;
+    
+    // try sending as static file
+    if(send_static_header(client, ext)) {
+      int file = open(uri, O_RDONLY); if(file == -1) { perror("open(uri)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(uri)"); exit(EXIT_FAILURE); }
+      { ssize_t sent = sendfile(client, file, NULL, file_stat.st_size); if(sent != file_stat.st_size) { if(sent == -1) perror("sendfile(uri)"); else fprintf(stderr, "sendfile(uri): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
+      if(close(file)) { perror("close(uri)"); exit(EXIT_FAILURE); }
+    } else {
+    
+      // if executable, switch on programs ext and run accordingly, if ret 0 200 OK, else if >= 400 <= 500 do that, else 500 
+      if(access(uri, X_OK)) goto encountered_problem;
+      // TODO run program
+    }
+
+    // if any problem arised, do 404 instead
+    goto skip_encountered_problem; encountered_problem: {
       { ssize_t sent = send(client, HTTP_404_HEADER, HTTP_404_HEADER_LEN, MSG_MORE); if(sent != HTTP_404_HEADER_LEN) { if(sent == -1) perror("send()"); else fprintf(stderr, "send(): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
       int file = open("404.html", O_RDONLY); if(file == -1) { perror("open(404.html)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(404.html)"); exit(EXIT_FAILURE); }
       { ssize_t sent = sendfile(client, file, NULL, file_stat.st_size); if(sent != file_stat.st_size) { if(sent == -1) perror("sendfile()"); else fprintf(stderr, "sendfile(): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
       if(close(file)) { perror("close(404.html)"); exit(EXIT_FAILURE); }
-    } else {
+    } skip_encountered_problem:
 
-      // receive
-      ssize_t length = recv(client, &buffer, 4096, 0); if(length == -1) { perror("recv()"); exit(EXIT_FAILURE); } if(length == 4096) { perror("recv() didn't expect to fill buffer"); exit(EXIT_FAILURE); }
-
-      // reply
-      strcpy(buffer, "HTTP/1.1 200 OK\r\n\r\nHello, World!\r\n");
-      length = strlen(buffer);
-      ssize_t sent = send(client, buffer, length, 0); if(sent != length) { if(sent == -1) perror("send()"); else fprintf(stderr, "send(): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); }
-    }
-
-    if(shutdown(client, SHUT_RDWR)) { perror("shutdown(client)"); exit(EXIT_FAILURE); }
-    if(close(client)) { perror("close(client)"); exit(EXIT_FAILURE); }
+    if(shutdown(client, SHUT_RDWR)) { perror("WARNING shutdown(client)"); }
+    if(close(client)) { perror("WARNING close(client)"); }
   }
 
-  if(shutdown(server, SHUT_RDWR)) { perror("shutdown(server)"); exit(EXIT_FAILURE); }
-  if(close(server)) { perror("close(server)"); exit(EXIT_FAILURE); }
+  if(shutdown(server, SHUT_RDWR)) { perror("WARNING shutdown(server)"); }
+  if(close(server)) { perror("WARNING close(server)"); }
   return EXIT_SUCCESS;
 }
