@@ -35,9 +35,9 @@ uint32_t hash_djb2(const char * s) {
 #define hash_djb2_py 5863726
 #define hash_djb2_ 5381
 
-bool send_static_header(int client, const char * ext) {
+bool send_static_header(int client, uint32_t hash_djb2_ext) {
   const char * mime;
-  switch(hash_djb2(ext)) {
+  switch(hash_djb2_ext) {
     case hash_djb2_css: mime = "text/css"; break;
     case hash_djb2_js: mime = "application/javascript"; break;
     case hash_djb2_html: mime = "text/html;charset=utf-8"; break;
@@ -133,15 +133,23 @@ int main(int argc, char * argv[]) {
     if(access(uri, R_OK)) goto encountered_problem;
     
     // try sending as static file
-    if(send_static_header(client, ext)) {
+    uint32_t hash_djb2_ext = hash_djb2(ext);
+    if(send_static_header(client, hash_djb2_ext)) {
       int file = open(uri, O_RDONLY); if(file == -1) { perror("open(uri)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(uri)"); exit(EXIT_FAILURE); }
       { ssize_t sent = sendfile(client, file, NULL, file_stat.st_size); if(sent != file_stat.st_size) { if(sent == -1) perror("sendfile(uri)"); else fprintf(stderr, "sendfile(uri): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
       if(close(file)) { perror("close(uri)"); exit(EXIT_FAILURE); }
     } else {
     
-      // if executable, switch on programs ext and run accordingly, if ret 0 200 OK, else if >= 400 <= 500 do that, else 500 
+      // if executable, fork and run
       if(access(uri, X_OK)) goto encountered_problem;
-      // TODO run program
+      switch(hash_djb2_ext) {
+        case hash_djb2_py:
+        case hash_djb2_:
+          break;
+        default: goto encountered_problem;
+      }
+      // if ret 0 200 OK, else if >= 400 <= 500 do that, else 500
+      
     }
 
     // if any problem arised, do 404 instead
