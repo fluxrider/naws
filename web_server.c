@@ -10,6 +10,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <poll.h>
 
 #define HTTP_404_HEADER "HTTP/1.1 404 Not Found\r\nContent-Type:text/html;charset=utf-8\r\n\r\n"
 #define HTTP_404_HEADER_LEN (sizeof(HTTP_404_HEADER) - 1)
@@ -149,7 +150,41 @@ int main(int argc, char * argv[]) {
         default: goto encountered_problem;
       }
       // if ret 0 200 OK, else if >= 400 <= 500 do that, else 500
-      
+      int pipe_err[2], pipe_out[2];
+      if(pipe(pipe_err) || pipe(pipe_out)) { perror("pipe()"); exit(EXIT_FAILURE); }
+      pid_t pid = fork(); 
+      // child
+      if(!pid) {
+        if(dup2(pipe_err[1], 2) == -1) { perror("CHILD dup2()"); exit(EXIT_FAILURE); }
+        if(dup2(pipe_out[1], 1) == -1) { perror("CHILD dup2()"); exit(EXIT_FAILURE); }
+        if(close(pipe_err[0])) { perror("CHILD close(pipe_err)"); exit(EXIT_FAILURE); }
+        if(close(pipe_err[1])) { perror("CHILD close(pipe_err)"); exit(EXIT_FAILURE); }
+        if(close(pipe_out[0])) { perror("CHILD close(pipe_out)"); exit(EXIT_FAILURE); }
+        if(close(pipe_out[1])) { perror("CHILD close(pipe_out)"); exit(EXIT_FAILURE); }
+        if(close(server)) { perror("CHILD close(server)"); exit(EXIT_FAILURE); }
+        if(close(client)) { perror("CHILD close(client)"); exit(EXIT_FAILURE); }
+        //execl(program_path, program_name, arg1, arg2, arg3);
+        //perror("execl()"); exit(EXIT_FAILURE);
+        printf("CHILD hello stdout");
+        exit(EXIT_SUCCESS);
+      }
+      // parent
+      if(pid == -1) { perror("fork()"); exit(EXIT_FAILURE); }
+      struct pollfd fds[2];
+      const int timeout_ms = 1000;
+      fds[0].fd = pipe_out[0]; if(close(pipe_out[1])) { perror("close(pipe_out)"); exit(EXIT_FAILURE); }
+      fds[1].fd = pipe_err[0]; if(close(pipe_err[1])) { perror("close(pipe_err)"); exit(EXIT_FAILURE); }
+      fds[0].events = fds[1].events = POLLIN;
+      int poll(fds, 2, timeout_ms);
+      int wstatus;
+      if(wait(&wstatus) != pid) { perror("wait()"); exit(EXIT_FAILURE); }
+      // TODO Waitpid(pid, &status, WNOHANG) != pid
+      // TODO select with timeout (or look at poll if that helps too)
+      int child_exit = WIFEXITED(wstatus)? WEXITSTATUS(wstatus) : EXIT_FAILURE;
+      // TODO is it too late to read from the stream? also there is a danger that the stdout will be full and block in child.
+      if(child_exit == EXIT_SUCCESS) {
+      } else {
+      }
     }
 
     // if any problem arised, do 404 instead
