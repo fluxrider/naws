@@ -13,6 +13,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <sys/signalfd.h>
+#include <errno.h>
 
 #define HTTP_404_HEADER "HTTP/1.1 404 Not Found\r\nContent-Type:text/html;charset=utf-8\r\n\r\n"
 #define HTTP_404_HEADER_LEN (sizeof(HTTP_404_HEADER) - 1)
@@ -111,7 +112,7 @@ int main(int argc, char * argv[]) {
 
     // handle GET
     // get uri
-    const char * uri = &buffer[4];
+    char * uri = &buffer[4];
     const char * query_string = NULL;
     int i = 4;
     while(buffer[i]) {
@@ -153,13 +154,12 @@ int main(int argc, char * argv[]) {
     if(access(uri, R_OK)) goto encountered_problem;
     
     // try sending as static file
-    uint32_t hash_djb2_ext = hash_djb2(ext);
+    const uint32_t hash_djb2_ext = hash_djb2(ext);
     if(send_static_header(client, hash_djb2_ext)) {
       int file = open(uri, O_RDONLY); if(file == -1) { perror("open(uri)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(uri)"); exit(EXIT_FAILURE); }
       { ssize_t sent = sendfile(client, file, NULL, file_stat.st_size); if(sent != file_stat.st_size) { if(sent == -1) perror("sendfile(uri)"); else fprintf(stderr, "sendfile(uri): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
       if(close(file)) { perror("close(uri)"); exit(EXIT_FAILURE); }
     } else {
-    
       // if a program, fork and run
       switch(hash_djb2_ext) {
         case hash_djb2_:
@@ -175,18 +175,34 @@ int main(int argc, char * argv[]) {
       pid_t pid = fork(); 
       // child
       if(!pid) {
-        if(dup2(pipe_err[1], 2) == -1) { perror("CHILD dup2()"); exit(EXIT_FAILURE); }
+        if(close(0)) { perror("CHILD close(0)"); exit(EXIT_FAILURE); }
+        if(close(1)) { perror("CHILD close(1)"); exit(EXIT_FAILURE); }
+        if(close(2)) { perror("CHILD close(2)"); exit(EXIT_FAILURE); }
         if(dup2(pipe_out[1], 1) == -1) { perror("CHILD dup2()"); exit(EXIT_FAILURE); }
-        if(close(pipe_err[0])) { perror("CHILD close(pipe_err)"); exit(EXIT_FAILURE); }
-        if(close(pipe_err[1])) { perror("CHILD close(pipe_err)"); exit(EXIT_FAILURE); }
+        if(dup2(pipe_err[1], 2) == -1) { perror("CHILD dup2()"); exit(EXIT_FAILURE); }
         if(close(pipe_out[0])) { perror("CHILD close(pipe_out)"); exit(EXIT_FAILURE); }
         if(close(pipe_out[1])) { perror("CHILD close(pipe_out)"); exit(EXIT_FAILURE); }
+        if(close(pipe_err[0])) { perror("CHILD close(pipe_err)"); exit(EXIT_FAILURE); }
+        if(close(pipe_err[1])) { perror("CHILD close(pipe_err)"); exit(EXIT_FAILURE); }
         if(close(server)) { perror("CHILD close(server)"); exit(EXIT_FAILURE); }
         if(close(client)) { perror("CHILD close(client)"); exit(EXIT_FAILURE); }
-        //execl(program_path, program_name, arg1, arg2, arg3);
-        //perror("execl()"); exit(EXIT_FAILURE);
-        printf("CHILD hello stdout");
-        exit(EXIT_SUCCESS);
+        // TODO parse query string to env to be semi cgi standard
+        char * const envp[] = { NULL };
+        switch(hash_djb2_ext) {
+          case hash_djb2_:
+            break;
+          case hash_djb2_py: {
+//          int execve(const char *pathname, char *const argv[], char *const envp[]);
+            //printf("CHILD execle python %s\n", uri);
+            //execle("python", "python", "-B", uri, (char *) NULL, envp);
+            //execle("ls", (char *) NULL, envp);
+            //execvpe("ls", args, envp);
+            char * const args[] = { "python", "-B", uri, NULL };
+            execve("/usr/bin/python", args, envp);
+            perror("execve()");
+            break; }
+        }
+        exit(EXIT_FAILURE);
       }
       // parent
       if(pid == -1) { perror("fork()"); exit(EXIT_FAILURE); }
@@ -197,17 +213,19 @@ int main(int argc, char * argv[]) {
       fds[2].fd = pipe_err[0]; if(close(pipe_err[1])) { perror("close(pipe_err)"); exit(EXIT_FAILURE); }
       fds[0].events = fds[1].events = fds[2].events = POLLIN;
       while(true) {
-        int polled = poll(fds, 2, timeout_ms); if(polled == -1) { perror("poll()"); exit(EXIT_FAILURE); }
+        int polled = poll(fds, 3, timeout_ms); if(polled == -1) { perror("poll()"); exit(EXIT_FAILURE); }
         if(poll == 0) {
           printf("WARNING poll() timed out\n");
         } else {
           if(fds[1].revents & POLLIN) {
             ssize_t n = read(fds[1].fd, buffer, buffer_capacity); if(n == -1) { perror("read(child stdout)"); exit(EXIT_FAILURE); }
-            printf("read %zd bytes from child stdout\n", n);
+            buffer[n] = '\0';
+            printf("read %zd bytes from child stdout\n%s\n", n, buffer);
           }
           if(fds[2].revents & POLLIN) {
             ssize_t n = read(fds[2].fd, buffer, buffer_capacity); if(n == -1) { perror("read(child stderr)"); exit(EXIT_FAILURE); }
-            printf("read %zd bytes from child stderr\n", n);
+            buffer[n] = '\0';
+            printf("read %zd bytes from child stderr\n%s\n", n, buffer);
           }
           if(fds[0].revents & POLLIN) {
             struct signalfd_siginfo info;
