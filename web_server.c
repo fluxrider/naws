@@ -11,9 +11,13 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <signal.h>
+#include <sys/signalfd.h>
 
 #define HTTP_404_HEADER "HTTP/1.1 404 Not Found\r\nContent-Type:text/html;charset=utf-8\r\n\r\n"
 #define HTTP_404_HEADER_LEN (sizeof(HTTP_404_HEADER) - 1)
+
+// C workaround to switch on string
 
 uint32_t hash_djb2(const char * s) {
   uint32_t hash = 5381;
@@ -55,11 +59,25 @@ bool send_static_header(int client, uint32_t hash_djb2_ext) {
   }
   char buffer[96];
   size_t length = sprintf(buffer, "HTTP/1.1 200 OK\r\nContent-Type:%s\r\n\r\n", mime);
-  ssize_t sent = send(client, buffer, length, MSG_MORE); if(sent != length) { if(sent == -1) perror("send(send_static_header)"); else fprintf(stderr, "send(send_static_header(%s)): couldn't send whole message, sent only %zu.\n", ext, sent); exit(EXIT_FAILURE); }
+  ssize_t sent = send(client, buffer, length, MSG_MORE); if(sent != length) { if(sent == -1) perror("send(send_static_header)"); else fprintf(stderr, "send(send_static_header(%u)): couldn't send whole message, sent only %zu.\n", hash_djb2_ext, sent); exit(EXIT_FAILURE); }
   return true;
 }
 
+// transform children end signal into a file descriptor
+int setup_signalfd() {
+  sigset_t mask;
+  sigemptyset(&mask);
+  sigaddset(&mask, SIGCHLD);
+
+  // block signal
+  if(sigprocmask(SIG_BLOCK, &mask, NULL) == -1) { perror("sigprocmask"); exit(EXIT_FAILURE); }
+
+  return signalfd(-1, &mask, SFD_CLOEXEC);
+}
+
 int main(int argc, char * argv[]) {
+  int sigchld_fd = setup_signalfd(); if(sigchld_fd == -1) { perror("signalfd()"); exit(EXIT_FAILURE); }
+
   // TODO port arg // NOTE: for privileged ports, sudo setcap 'cap_net_bind_service=+ep' /path/to/program
   uint16_t port = 8888;
 
@@ -69,7 +87,8 @@ int main(int argc, char * argv[]) {
   if(bind(server, (const struct sockaddr *)&(struct sockaddr_in){AF_INET, htons(port), {INADDR_ANY}}, sizeof(struct sockaddr_in))) { perror("bind()"); exit(EXIT_FAILURE); }
   if(listen(server, 0)) { perror("listen()"); exit(EXIT_FAILURE); }
   struct sockaddr_in client_addr;
-  uint8_t buffer[8192];
+  const int buffer_capacity = 8192;
+  uint8_t buffer[buffer_capacity];
   while(true) {
     int client = accept(server, (struct sockaddr *)&client_addr, &(socklen_t){sizeof(struct sockaddr_in)}); if(client == -1) { perror("accept()"); exit(EXIT_FAILURE); }
 
@@ -84,8 +103,8 @@ int main(int argc, char * argv[]) {
     // TODO if traffic from the internet/tor, turn on HTTPS/AUTH and turn server off on multi failed attempts
 
     // receive
-    ssize_t length = recv(client, &buffer, 8192, 0); if(length == -1) { perror("recv()"); exit(EXIT_FAILURE); }
-    if(length == 8192) { fprintf(stderr, "recv() didn't expect to fill buffer"); exit(EXIT_FAILURE); } // NOTE: I rely on this
+    ssize_t length = recv(client, &buffer, buffer_capacity, 0); if(length == -1) { perror("recv()"); exit(EXIT_FAILURE); }
+    if(length == buffer_capacity) { fprintf(stderr, "recv() didn't expect to fill buffer"); exit(EXIT_FAILURE); } // NOTE: I rely on this
     buffer[length] = '\0';
     // printf("%s\n", buffer);
     if(length < 4 || strncmp(buffer, "GET ", 4)) goto encountered_problem;
@@ -141,11 +160,12 @@ int main(int argc, char * argv[]) {
       if(close(file)) { perror("close(uri)"); exit(EXIT_FAILURE); }
     } else {
     
-      // if executable, fork and run
-      if(access(uri, X_OK)) goto encountered_problem;
+      // if a program, fork and run
       switch(hash_djb2_ext) {
-        case hash_djb2_py:
         case hash_djb2_:
+          if(access(uri, X_OK)) goto encountered_problem;
+          break;
+        case hash_djb2_py:
           break;
         default: goto encountered_problem;
       }
@@ -170,20 +190,35 @@ int main(int argc, char * argv[]) {
       }
       // parent
       if(pid == -1) { perror("fork()"); exit(EXIT_FAILURE); }
-      struct pollfd fds[2];
+      struct pollfd fds[3];
       const int timeout_ms = 1000;
-      fds[0].fd = pipe_out[0]; if(close(pipe_out[1])) { perror("close(pipe_out)"); exit(EXIT_FAILURE); }
-      fds[1].fd = pipe_err[0]; if(close(pipe_err[1])) { perror("close(pipe_err)"); exit(EXIT_FAILURE); }
-      fds[0].events = fds[1].events = POLLIN;
-      int poll(fds, 2, timeout_ms);
-      int wstatus;
-      if(wait(&wstatus) != pid) { perror("wait()"); exit(EXIT_FAILURE); }
-      // TODO Waitpid(pid, &status, WNOHANG) != pid
-      // TODO select with timeout (or look at poll if that helps too)
-      int child_exit = WIFEXITED(wstatus)? WEXITSTATUS(wstatus) : EXIT_FAILURE;
-      // TODO is it too late to read from the stream? also there is a danger that the stdout will be full and block in child.
-      if(child_exit == EXIT_SUCCESS) {
-      } else {
+      fds[0].fd = sigchld_fd;
+      fds[1].fd = pipe_out[0]; if(close(pipe_out[1])) { perror("close(pipe_out)"); exit(EXIT_FAILURE); }
+      fds[2].fd = pipe_err[0]; if(close(pipe_err[1])) { perror("close(pipe_err)"); exit(EXIT_FAILURE); }
+      fds[0].events = fds[1].events = fds[2].events = POLLIN;
+      while(true) {
+        int polled = poll(fds, 2, timeout_ms); if(polled == -1) { perror("poll()"); exit(EXIT_FAILURE); }
+        if(poll == 0) {
+          printf("WARNING poll() timed out\n");
+        } else {
+          if(fds[1].revents & POLLIN) {
+            ssize_t n = read(fds[1].fd, buffer, buffer_capacity); if(n == -1) { perror("read(child stdout)"); exit(EXIT_FAILURE); }
+            printf("read %zd bytes from child stdout\n", n);
+          }
+          if(fds[2].revents & POLLIN) {
+            ssize_t n = read(fds[2].fd, buffer, buffer_capacity); if(n == -1) { perror("read(child stderr)"); exit(EXIT_FAILURE); }
+            printf("read %zd bytes from child stderr\n", n);
+          }
+          if(fds[0].revents & POLLIN) {
+            struct signalfd_siginfo info;
+            ssize_t n = read(sigchld_fd, &info, sizeof(struct signalfd_siginfo)); if(n != sizeof(struct signalfd_siginfo)) { if(n == -1) perror("read(sigchld_fd)"); else fprintf(stderr, "read(sigchld_fd) wasn't whole\n"); exit(EXIT_FAILURE); }
+            int child_exit = info.ssi_code == CLD_EXITED? info.ssi_status : EXIT_FAILURE;
+            printf("child exit: %d\n", child_exit);
+            if(close(fds[1].fd)) perror("WARNING close(child stdout)");
+            if(close(fds[2].fd)) perror("WARNING close(child stderr)");
+            goto encountered_problem; // TMP
+          }
+        }
       }
     }
 
