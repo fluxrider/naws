@@ -119,7 +119,42 @@ int main(int argc, char * argv[]) {
     // receive
     ssize_t length = recv(client, &buffer, buffer_capacity, 0); if(length == -1) { perror("recv()"); exit(EXIT_FAILURE); }
     buffer[length] = '\0';
-    // printf("%s\n", buffer);
+    printf("received %zd bytes\n", length);
+
+    // tls
+    int index = 0;
+    uint8_t tls_plaintext_type = buffer[index++];
+    uint16_t tls_plaintext_legacy_record_version = (buffer[index] << 8) | buffer[index+1]; index += 2;
+    uint16_t tls_plaintext_length = (buffer[index] << 8) | buffer[index+1]; index += 2;
+    printf("tls_plaintext_type: %u\n", tls_plaintext_type);
+    printf("tls_plaintext_legacy_record_version: 0x%x\n", tls_plaintext_legacy_record_version);
+    printf("tls_plaintext_length: %u\n", tls_plaintext_length);
+    switch(tls_plaintext_type) {
+      // tls handshake
+      case 22: {
+        uint8_t tls_msg_type = buffer[index++];
+        uint32_t tls_msg_length = (buffer[index] << 16) | (buffer[index+1] << 8) | buffer[index+2]; index += 3;
+        printf("tls_msg_type: %u\n", tls_msg_type);
+        printf("tls_msg_length: %u\n", tls_msg_length);
+        switch(tls_msg_type) {
+          // client hello
+          case 1: {
+            uint16_t legacy_version = (buffer[index] << 8) | buffer[index+1]; index += 2;
+            uint8_t * random = &buffer[index]; index += 32;
+            uint8_t legacy_session_id = buffer[index++];
+            uint8_t * cipher_suites = &buffer[index]; index += 2;
+            uint8_t legacy_compression_methods = buffer[index++];
+            uint16_t extensions = (buffer[index] << 8) | buffer[index+1]; index += 2;
+            printf("legacy_version: 0x%x\n", legacy_version);
+            printf("legacy_session_id: %u\n", legacy_session_id);
+            printf("cipher_suites: %u %u\n", cipher_suites[0], cipher_suites[1]);
+            printf("legacy_compression_methods: %u\n", legacy_compression_methods);
+            printf("extensions: %u\n", extensions);
+            break; }
+        }
+        break; }
+    }
+  
     if(length < 4 || strncmp(buffer, "GET ", 4)) goto encountered_problem;
 
     // handle GET
