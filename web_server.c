@@ -184,7 +184,6 @@ int main(int argc, char * argv[]) {
           break;
         default: goto encountered_problem;
       }
-      // if ret 0 200 OK, else if >= 400 <= 500 do that, else 500
       int pipe_err[2], pipe_out[2];
       if(pipe(pipe_err) || pipe(pipe_out)) { perror("pipe()"); exit(EXIT_FAILURE); }
       pid_t pid = fork(); 
@@ -206,7 +205,7 @@ int main(int argc, char * argv[]) {
         snprintf(query_string_env, 1024 + 13, "QUERY_STRING=%s", query_string);
         query_string_env[cap - 1] = '\0';
         char * const envp[] = { query_string_env, NULL };
-        // TODO change working directory to be where the script resides
+        // change working directory to be where the script resides
         filename[-1] = '\0'; if(uri != filename && chdir(uri)) { perror("CHILD chdir(path)"); fprintf(stderr, "path: %s", uri); exit(EXIT_FAILURE); }
         switch(hash_djb2_ext) {
           case hash_djb2_: {
@@ -268,6 +267,8 @@ int main(int argc, char * argv[]) {
             if(close(fds[2].fd)) perror("WARNING close(child stderr)");
             // child program failed
             if(child_has_stderr || child_exit != EXIT_SUCCESS) {
+              // the child can ask to return 404 instead of 500 using the exit code 4
+              if(child_exit == 4) { printf("WARNING child force 404\n"); goto encountered_problem; }
               printf("WARNING encountered problem, replied 500\n");
               { ssize_t sent = send(client, HTTP_500_HEADER, HTTP_500_HEADER_LEN, MSG_MORE); if(sent != HTTP_500_HEADER_LEN) { if(sent == -1) perror("send()"); else fprintf(stderr, "send(): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
               int file = open("500.html", O_RDONLY); if(file == -1) { perror("open(500.html)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(500.html)"); exit(EXIT_FAILURE); }
