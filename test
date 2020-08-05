@@ -1,6 +1,7 @@
 #!/usr/bin/python
 
 import cgi
+import os
 
 qs = cgi.FieldStorage()
 if 'user' in qs and qs['user'].value.isalpha():
@@ -16,7 +17,7 @@ print(f"""Content-Type:text/html;charset=utf-8
 <meta charset="utf-8" />
 <title>python script</title>
 </head><body>
-python script for {user}.
+python script for {user} at {os.getcwd()}.
 </body>
 </html>
 """)
