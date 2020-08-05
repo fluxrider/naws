@@ -86,7 +86,8 @@ int main(int argc, char * argv[]) {
   int sigchld_fd = setup_signalfd(); if(sigchld_fd == -1) { perror("signalfd()"); exit(EXIT_FAILURE); }
 
   uint16_t port = strtol(argv[1], NULL, 10);
-  const char * root_folder = argv[2];
+  int root = open(argv[2], O_CLOEXEC | O_DIRECTORY | O_PATH); if(root == -1) { perror("open(root)"); exit(EXIT_FAILURE); }
+  // TODO simply fchdir instead of the at*?
 
   // listen for clients
   int server = socket(AF_INET, SOCK_STREAM, 0); if(server == -1) { perror("socket()"); exit(EXIT_FAILURE); }
@@ -103,7 +104,6 @@ int main(int argc, char * argv[]) {
   size_t child_stdout_buffer_capacity = 10 * 1024;
   uint8_t * child_stdout_buffer = realloc(NULL, child_stdout_buffer_capacity);
   memcpy(child_stdout_buffer, HTTP_200_HEADER, HTTP_200_HEADER_LEN);
-  char local_uri[buffer_capacity + strlen(root_folder) + 1];
   while(true) {
     int client = accept(server, (struct sockaddr *)&client_addr, &(socklen_t){sizeof(struct sockaddr_in)}); if(client == -1) { perror("accept()"); exit(EXIT_FAILURE); }
 
@@ -131,9 +131,10 @@ int main(int argc, char * argv[]) {
       int i = 4;
       while(buffer[i]) {
         switch(buffer[i]) {
-          // no "/.." allowed
+          // no ".." allowed
           case '.':
-            if(buffer[i-1] != '/' || buffer[i+1] != '.') { i++; break; }
+            if(buffer[i+1] != '.') { i++; break; }
+            // fall through
           // unexpected end of line
           case '\r':
           case '\n':
@@ -155,31 +156,31 @@ int main(int argc, char * argv[]) {
       if(!query_string) query_string = "";
       printf("ACCESS uri: %s query: %s\n", uri, query_string);
       if(uri[0] != '/') goto encountered_problem;
-      sprintf(local_uri, "%s%s", root_folder, uri);
+      do { uri += 1; } while(uri[0] == '/');
     }
     
     // figure out filename extension
-    const char * ext = strrchr(local_uri, '.');
+    const char * ext = strrchr(uri, '.');
     if(!ext) ext = ""; else ext += 1;
     if(strchr(ext, '/')) ext = "";
     printf("ext: %s\n", ext);
-    printf("local_uri: %s\n", local_uri);
+    printf("uri: %s\n", uri);
 
     // verify access of local_uri
-    if(access(local_uri, R_OK)) goto encountered_problem;
+    if(faccessat(root, uri, R_OK, 0)) goto encountered_problem;
     
     // try sending as static file
     const uint32_t hash_djb2_ext = hash_djb2(ext);
     if(send_static_header(client, hash_djb2_ext)) {
-      int file = open(local_uri, O_RDONLY); if(file == -1) { perror("open(uri)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(uri)"); exit(EXIT_FAILURE); }
+      int file = openat(root, uri, O_RDONLY); if(file == -1) { perror("open(uri)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(uri)"); exit(EXIT_FAILURE); }
       { ssize_t sent = sendfile(client, file, NULL, file_stat.st_size); if(sent != file_stat.st_size) { if(sent == -1) perror("sendfile(uri)"); else fprintf(stderr, "sendfile(uri): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
       if(close(file)) { perror("close(uri)"); exit(EXIT_FAILURE); }
     } else {
       // if a program, fork and run
       switch(hash_djb2_ext) {
         case hash_djb2_:
-          if(access(local_uri, X_OK)) goto encountered_problem;
-          { struct stat uri_stat; if(!stat(local_uri, &uri_stat) && S_ISDIR(uri_stat.st_mode)) goto encountered_problem; }
+          if(faccessat(root, uri, X_OK, 0)) goto encountered_problem;
+          { struct stat uri_stat; if(!fstatat(root, uri, &uri_stat, 0) && S_ISDIR(uri_stat.st_mode)) goto encountered_problem; }
           break;
         case hash_djb2_py:
           break;
@@ -207,10 +208,12 @@ int main(int argc, char * argv[]) {
         snprintf(query_string_env, 1024 + 13, "QUERY_STRING=%s", query_string);
         query_string_env[cap - 1] = '\0';
         char * const envp[] = { query_string_env, NULL };
+        // TODO change working directory to be where the script resides
+        // fchdir
         switch(hash_djb2_ext) {
           case hash_djb2_: {
-            char * const args[] = { local_uri, NULL }; // TODO pass program name, not full uri
-            execve(local_uri, args, envp);
+            char * const args[] = { uri, NULL }; // TODO pass program name, not full uri
+            execveat(root, uri, args, envp, 0);
             perror("execve()");
             break; }
           case hash_djb2_py: {
@@ -269,7 +272,7 @@ int main(int argc, char * argv[]) {
             if(child_has_stderr || child_exit != EXIT_SUCCESS) {
               printf("WARNING encountered problem, replied 500\n");
               { ssize_t sent = send(client, HTTP_500_HEADER, HTTP_500_HEADER_LEN, MSG_MORE); if(sent != HTTP_500_HEADER_LEN) { if(sent == -1) perror("send()"); else fprintf(stderr, "send(): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
-              int file = open("500.html", O_RDONLY); if(file == -1) { perror("open(500.html)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(500.html)"); exit(EXIT_FAILURE); }
+              int file = openat(root, "500.html", O_RDONLY); if(file == -1) { perror("open(500.html)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(500.html)"); exit(EXIT_FAILURE); }
               { ssize_t sent = sendfile(client, file, NULL, file_stat.st_size); if(sent != file_stat.st_size) { if(sent == -1) perror("sendfile()"); else fprintf(stderr, "sendfile(): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
               if(close(file)) { perror("close(500.html)"); exit(EXIT_FAILURE); }
             }
@@ -287,7 +290,7 @@ int main(int argc, char * argv[]) {
     goto skip_encountered_problem; encountered_problem: {
       printf("WARNING encountered problem, replied 404\n");
       { ssize_t sent = send(client, HTTP_404_HEADER, HTTP_404_HEADER_LEN, MSG_MORE); if(sent != HTTP_404_HEADER_LEN) { if(sent == -1) perror("send()"); else fprintf(stderr, "send(): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
-      int file = open("404.html", O_RDONLY); if(file == -1) { perror("open(404.html)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(404.html)"); exit(EXIT_FAILURE); }
+      int file = openat(root, "404.html", O_RDONLY); if(file == -1) { perror("open(404.html)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(404.html)"); exit(EXIT_FAILURE); }
       { ssize_t sent = sendfile(client, file, NULL, file_stat.st_size); if(sent != file_stat.st_size) { if(sent == -1) perror("sendfile()"); else fprintf(stderr, "sendfile(): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
       if(close(file)) { perror("close(404.html)"); exit(EXIT_FAILURE); }
     } skip_encountered_problem:
