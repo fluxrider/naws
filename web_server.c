@@ -81,16 +81,21 @@ int setup_signalfd() {
 }
 
 int main(int argc, char * argv[]) {
+  if(argc != 3) { fprintf(stderr, "usage: naws port root-folder\nexample: naws 8888 .\n"); exit(EXIT_FAILURE); }
+
   int sigchld_fd = setup_signalfd(); if(sigchld_fd == -1) { perror("signalfd()"); exit(EXIT_FAILURE); }
 
-  // TODO port arg // NOTE: for privileged ports, sudo setcap 'cap_net_bind_service=+ep' /path/to/program
-  uint16_t port = 8888;
-  // TODO root folder arg, currently simply use CWD
+  uint16_t port = strtol(argv[1], NULL, 10);
+  const char * root_folder = argv[2];
 
   // listen for clients
   int server = socket(AF_INET, SOCK_STREAM, 0); if(server == -1) { perror("socket()"); exit(EXIT_FAILURE); }
   if(setsockopt(server, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int))) { perror("setsockopt()"); exit(EXIT_FAILURE); }
-  if(bind(server, (const struct sockaddr *)&(struct sockaddr_in){AF_INET, htons(port), {INADDR_ANY}}, sizeof(struct sockaddr_in))) { perror("bind()"); exit(EXIT_FAILURE); }
+  if(bind(server, (const struct sockaddr *)&(struct sockaddr_in){AF_INET, htons(port), {INADDR_ANY}}, sizeof(struct sockaddr_in))) {
+    perror("bind()");
+    if(port < 1024) fprintf(stderr, "for privileged ports, ensure capability is set\nsudo setcap 'cap_net_bind_service=+ep' /path/to/program\n");
+    exit(EXIT_FAILURE);
+  }
   if(listen(server, 0)) { perror("listen()"); exit(EXIT_FAILURE); }
   struct sockaddr_in client_addr;
   const int buffer_capacity = 8191;
@@ -98,6 +103,7 @@ int main(int argc, char * argv[]) {
   size_t child_stdout_buffer_capacity = 10 * 1024;
   uint8_t * child_stdout_buffer = realloc(NULL, child_stdout_buffer_capacity);
   memcpy(child_stdout_buffer, HTTP_200_HEADER, HTTP_200_HEADER_LEN);
+  char local_uri[buffer_capacity + strlen(root_folder) + 1];
   while(true) {
     int client = accept(server, (struct sockaddr *)&client_addr, &(socklen_t){sizeof(struct sockaddr_in)}); if(client == -1) { perror("accept()"); exit(EXIT_FAILURE); }
 
@@ -118,58 +124,62 @@ int main(int argc, char * argv[]) {
     if(length < 4 || strncmp(buffer, "GET ", 4)) goto encountered_problem;
 
     // handle GET
-    // get uri
-    char * uri = &buffer[4];
+    // get uri and query_string
     char * query_string = NULL;
-    int i = 4;
-    while(buffer[i]) {
-      switch(buffer[i]) {
-        // no "/.." allowed
-        case '.':
-          if(buffer[i-1] != '/' || buffer[i+1] != '.') { i++; break; }
-        // unexpected end of line
-        case '\r':
-        case '\n':
-          fprintf(stderr, "WARNING error parsing request-uri\n%s", buffer);
-          goto encountered_problem;
-        case ' ':
-          buffer[i] = '\0';
-          break;
-        case '?':
-          if(!query_string) {
+    {
+      char * uri = &buffer[4];
+      int i = 4;
+      while(buffer[i]) {
+        switch(buffer[i]) {
+          // no "/.." allowed
+          case '.':
+            if(buffer[i-1] != '/' || buffer[i+1] != '.') { i++; break; }
+          // unexpected end of line
+          case '\r':
+          case '\n':
+            fprintf(stderr, "WARNING error parsing request-uri\n%s", buffer);
+            goto encountered_problem;
+          case ' ':
             buffer[i] = '\0';
-            query_string = &buffer[i+1];
-          }
-          // fall through
-        default:
-          i++;
+            break;
+          case '?':
+            if(!query_string) {
+              buffer[i] = '\0';
+              query_string = &buffer[i+1];
+            }
+            // fall through
+          default:
+            i++;
+        }
       }
+      if(!query_string) query_string = "";
+      printf("ACCESS uri: %s query: %s\n", uri, query_string);
+      if(uri[0] != '/') goto encountered_problem;
+      sprintf(local_uri, "%s%s", root_folder, uri);
     }
-    if(!query_string) query_string = "";
-    printf("ACCESS uri: %s query: %s\n", uri, query_string);
-    if(uri[0] != '/') goto encountered_problem;
-    uri += 1;
     
     // figure out filename extension
-    const char * ext = strrchr(uri, '.');
+    const char * ext = strrchr(local_uri, '.');
     if(!ext) ext = ""; else ext += 1;
     if(strchr(ext, '/')) ext = "";
-    //printf("ext: %s\n", ext);
+    printf("ext: %s\n", ext);
+    printf("local_uri: %s\n", local_uri);
 
-    // verify access of uri
-    if(access(uri, R_OK)) goto encountered_problem;
+    // verify access of local_uri
+    if(access(local_uri, R_OK)) goto encountered_problem;
     
     // try sending as static file
     const uint32_t hash_djb2_ext = hash_djb2(ext);
     if(send_static_header(client, hash_djb2_ext)) {
-      int file = open(uri, O_RDONLY); if(file == -1) { perror("open(uri)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(uri)"); exit(EXIT_FAILURE); }
+      int file = open(local_uri, O_RDONLY); if(file == -1) { perror("open(uri)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(uri)"); exit(EXIT_FAILURE); }
       { ssize_t sent = sendfile(client, file, NULL, file_stat.st_size); if(sent != file_stat.st_size) { if(sent == -1) perror("sendfile(uri)"); else fprintf(stderr, "sendfile(uri): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
       if(close(file)) { perror("close(uri)"); exit(EXIT_FAILURE); }
     } else {
       // if a program, fork and run
       switch(hash_djb2_ext) {
         case hash_djb2_:
-          if(access(uri, X_OK)) goto encountered_problem;
+          if(access(local_uri, X_OK)) goto encountered_problem;
+          { struct stat uri_stat; if(!stat(local_uri, &uri_stat) && S_ISDIR(uri_stat.st_mode)) goto encountered_problem; }
           break;
         case hash_djb2_py:
           break;
@@ -199,12 +209,12 @@ int main(int argc, char * argv[]) {
         char * const envp[] = { query_string_env, NULL };
         switch(hash_djb2_ext) {
           case hash_djb2_: {
-            char * const args[] = { uri, NULL }; // TODO pass program name, not full uri
-            execve(uri, args, envp);
+            char * const args[] = { local_uri, NULL }; // TODO pass program name, not full uri
+            execve(local_uri, args, envp);
             perror("execve()");
             break; }
           case hash_djb2_py: {
-            char * const args[] = { "python", "-B", uri, NULL };
+            char * const args[] = { "python", "-B", local_uri, NULL };
             execve("/usr/bin/python", args, envp);
             perror("execve()");
             break; }
