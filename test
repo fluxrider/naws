@@ -1,3 +1,5 @@
+#!/usr/bin/python
+
 import cgi
 
 qs = cgi.FieldStorage()

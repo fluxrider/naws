@@ -22,7 +22,7 @@
 #define HTTP_200_HEADER "HTTP/1.1 200 OK\r\n"
 #define HTTP_200_HEADER_LEN (sizeof(HTTP_200_HEADER) - 1)
 
-// C workaround to switch on string
+// C workaround to switch on string (i.e. hash them)
 
 uint32_t hash_djb2(const char * s) {
   uint32_t hash = 5381;
@@ -85,6 +85,7 @@ int main(int argc, char * argv[]) {
 
   // TODO port arg // NOTE: for privileged ports, sudo setcap 'cap_net_bind_service=+ep' /path/to/program
   uint16_t port = 8888;
+  // TODO root folder arg, currently simply use CWD
 
   // listen for clients
   int server = socket(AF_INET, SOCK_STREAM, 0); if(server == -1) { perror("socket()"); exit(EXIT_FAILURE); }
@@ -119,7 +120,7 @@ int main(int argc, char * argv[]) {
     // handle GET
     // get uri
     char * uri = &buffer[4];
-    const char * query_string = NULL;
+    char * query_string = NULL;
     int i = 4;
     while(buffer[i]) {
       switch(buffer[i]) {
@@ -191,11 +192,17 @@ int main(int argc, char * argv[]) {
         if(close(pipe_err[1])) { perror("CHILD close(pipe_err)"); exit(EXIT_FAILURE); }
         if(close(server)) { perror("CHILD close(server)"); exit(EXIT_FAILURE); }
         if(close(client)) { perror("CHILD close(client)"); exit(EXIT_FAILURE); }
-        // TODO parse query string to env to be semi cgi standard
-        char * const envp[] = { NULL };
+        int cap = 1024 + 13 + 1;
+        char query_string_env[cap];
+        snprintf(query_string_env, 1024 + 13, "QUERY_STRING=%s", query_string);
+        query_string_env[cap - 1] = '\0';
+        char * const envp[] = { query_string_env, NULL };
         switch(hash_djb2_ext) {
-          case hash_djb2_:
-            break;
+          case hash_djb2_: {
+            char * const args[] = { uri, NULL }; // TODO pass program name, not full uri
+            execve(uri, args, envp);
+            perror("execve()");
+            break; }
           case hash_djb2_py: {
             char * const args[] = { "python", "-B", uri, NULL };
             execve("/usr/bin/python", args, envp);
