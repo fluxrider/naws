@@ -17,6 +17,10 @@
 
 #define HTTP_404_HEADER "HTTP/1.1 404 Not Found\r\nContent-Type:text/html;charset=utf-8\r\n\r\n"
 #define HTTP_404_HEADER_LEN (sizeof(HTTP_404_HEADER) - 1)
+#define HTTP_500_HEADER "HTTP/1.1 500 Internal Server Error\r\nContent-Type:text/html;charset=utf-8\r\n\r\n"
+#define HTTP_500_HEADER_LEN (sizeof(HTTP_500_HEADER) - 1)
+#define HTTP_200_HEADER "HTTP/1.1 200 OK\r\n"
+#define HTTP_200_HEADER_LEN (sizeof(HTTP_200_HEADER) - 1)
 
 // C workaround to switch on string
 
@@ -88,8 +92,11 @@ int main(int argc, char * argv[]) {
   if(bind(server, (const struct sockaddr *)&(struct sockaddr_in){AF_INET, htons(port), {INADDR_ANY}}, sizeof(struct sockaddr_in))) { perror("bind()"); exit(EXIT_FAILURE); }
   if(listen(server, 0)) { perror("listen()"); exit(EXIT_FAILURE); }
   struct sockaddr_in client_addr;
-  const int buffer_capacity = 8192;
-  uint8_t buffer[buffer_capacity];
+  const int buffer_capacity = 8191;
+  uint8_t buffer[buffer_capacity + 1]; // room for a null char
+  size_t child_stdout_buffer_capacity = 10 * 1024;
+  uint8_t * child_stdout_buffer = realloc(NULL, child_stdout_buffer_capacity);
+  memcpy(child_stdout_buffer, HTTP_200_HEADER, HTTP_200_HEADER_LEN);
   while(true) {
     int client = accept(server, (struct sockaddr *)&client_addr, &(socklen_t){sizeof(struct sockaddr_in)}); if(client == -1) { perror("accept()"); exit(EXIT_FAILURE); }
 
@@ -105,7 +112,6 @@ int main(int argc, char * argv[]) {
 
     // receive
     ssize_t length = recv(client, &buffer, buffer_capacity, 0); if(length == -1) { perror("recv()"); exit(EXIT_FAILURE); }
-    if(length == buffer_capacity) { fprintf(stderr, "recv() didn't expect to fill buffer"); exit(EXIT_FAILURE); } // NOTE: I rely on this
     buffer[length] = '\0';
     // printf("%s\n", buffer);
     if(length < 4 || strncmp(buffer, "GET ", 4)) goto encountered_problem;
@@ -123,7 +129,7 @@ int main(int argc, char * argv[]) {
         // unexpected end of line
         case '\r':
         case '\n':
-          fprintf(stderr, "error parsing request-uri\n%s", buffer);
+          fprintf(stderr, "WARNING error parsing request-uri\n%s", buffer);
           goto encountered_problem;
         case ' ':
           buffer[i] = '\0';
@@ -139,8 +145,7 @@ int main(int argc, char * argv[]) {
       }
     }
     if(!query_string) query_string = "";
-    printf("uri: %s\n", uri);
-    printf("query: %s\n", query_string);
+    printf("ACCESS uri: %s query: %s\n", uri, query_string);
     if(uri[0] != '/') goto encountered_problem;
     uri += 1;
     
@@ -148,7 +153,7 @@ int main(int argc, char * argv[]) {
     const char * ext = strrchr(uri, '.');
     if(!ext) ext = ""; else ext += 1;
     if(strchr(ext, '/')) ext = "";
-    printf("ext: %s\n", ext);
+    //printf("ext: %s\n", ext);
 
     // verify access of uri
     if(access(uri, R_OK)) goto encountered_problem;
@@ -192,11 +197,6 @@ int main(int argc, char * argv[]) {
           case hash_djb2_:
             break;
           case hash_djb2_py: {
-//          int execve(const char *pathname, char *const argv[], char *const envp[]);
-            //printf("CHILD execle python %s\n", uri);
-            //execle("python", "python", "-B", uri, (char *) NULL, envp);
-            //execle("ls", (char *) NULL, envp);
-            //execvpe("ls", args, envp);
             char * const args[] = { "python", "-B", uri, NULL };
             execve("/usr/bin/python", args, envp);
             perror("execve()");
@@ -212,29 +212,55 @@ int main(int argc, char * argv[]) {
       fds[1].fd = pipe_out[0]; if(close(pipe_out[1])) { perror("close(pipe_out)"); exit(EXIT_FAILURE); }
       fds[2].fd = pipe_err[0]; if(close(pipe_err[1])) { perror("close(pipe_err)"); exit(EXIT_FAILURE); }
       fds[0].events = fds[1].events = fds[2].events = POLLIN;
+      bool child_has_stderr = false;
+      size_t child_stdout_buffer_size = HTTP_200_HEADER_LEN;
       while(true) {
         int polled = poll(fds, 3, timeout_ms); if(polled == -1) { perror("poll()"); exit(EXIT_FAILURE); }
         if(poll == 0) {
           printf("WARNING poll() timed out\n");
         } else {
+          bool read_something = false;
+          // buffer stdout
           if(fds[1].revents & POLLIN) {
-            ssize_t n = read(fds[1].fd, buffer, buffer_capacity); if(n == -1) { perror("read(child stdout)"); exit(EXIT_FAILURE); }
-            buffer[n] = '\0';
-            printf("read %zd bytes from child stdout\n%s\n", n, buffer);
+            size_t space_left = child_stdout_buffer_capacity - child_stdout_buffer_size;
+            ssize_t n = read(fds[1].fd, &child_stdout_buffer[child_stdout_buffer_size], space_left); if(n == -1) { perror("read(child stdout)"); exit(EXIT_FAILURE); }
+            if(n == space_left) {
+              child_stdout_buffer_capacity *= 2;
+              child_stdout_buffer = realloc(child_stdout_buffer, child_stdout_buffer_capacity);
+              printf("INFO grew child stdout buffer to %zu\n", child_stdout_buffer_capacity);
+            }
+            child_stdout_buffer_size += n;
+            read_something = true;
           }
+          // spew stderr
           if(fds[2].revents & POLLIN) {
             ssize_t n = read(fds[2].fd, buffer, buffer_capacity); if(n == -1) { perror("read(child stderr)"); exit(EXIT_FAILURE); }
             buffer[n] = '\0';
-            printf("read %zd bytes from child stderr\n%s\n", n, buffer);
+            printf("WARNING read %zd bytes from child stderr\n%s\n", n, buffer);
+            child_has_stderr = true;
+            read_something = true;
           }
-          if(fds[0].revents & POLLIN) {
+          // child process ended (only handle this once stdout/stderr are empty)
+          if(!read_something && fds[0].revents & POLLIN) {
             struct signalfd_siginfo info;
             ssize_t n = read(sigchld_fd, &info, sizeof(struct signalfd_siginfo)); if(n != sizeof(struct signalfd_siginfo)) { if(n == -1) perror("read(sigchld_fd)"); else fprintf(stderr, "read(sigchld_fd) wasn't whole\n"); exit(EXIT_FAILURE); }
             int child_exit = info.ssi_code == CLD_EXITED? info.ssi_status : EXIT_FAILURE;
-            printf("child exit: %d\n", child_exit);
+            //printf("child exit: %d\n", child_exit);
             if(close(fds[1].fd)) perror("WARNING close(child stdout)");
             if(close(fds[2].fd)) perror("WARNING close(child stderr)");
-            goto encountered_problem; // TMP
+            // child program failed
+            if(child_has_stderr || child_exit != EXIT_SUCCESS) {
+              printf("WARNING encountered problem, replied 500\n");
+              { ssize_t sent = send(client, HTTP_500_HEADER, HTTP_500_HEADER_LEN, MSG_MORE); if(sent != HTTP_500_HEADER_LEN) { if(sent == -1) perror("send()"); else fprintf(stderr, "send(): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
+              int file = open("500.html", O_RDONLY); if(file == -1) { perror("open(500.html)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(500.html)"); exit(EXIT_FAILURE); }
+              { ssize_t sent = sendfile(client, file, NULL, file_stat.st_size); if(sent != file_stat.st_size) { if(sent == -1) perror("sendfile()"); else fprintf(stderr, "sendfile(): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
+              if(close(file)) { perror("close(500.html)"); exit(EXIT_FAILURE); }
+            }
+            // child program success
+            else {
+              ssize_t sent = send(client, child_stdout_buffer, child_stdout_buffer_size, 0); if(sent != child_stdout_buffer_size) { if(sent == -1) perror("send()"); else fprintf(stderr, "send(): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); }
+            }
+            break;
           }
         }
       }
@@ -242,6 +268,7 @@ int main(int argc, char * argv[]) {
 
     // if any problem arised, do 404 instead
     goto skip_encountered_problem; encountered_problem: {
+      printf("WARNING encountered problem, replied 404\n");
       { ssize_t sent = send(client, HTTP_404_HEADER, HTTP_404_HEADER_LEN, MSG_MORE); if(sent != HTTP_404_HEADER_LEN) { if(sent == -1) perror("send()"); else fprintf(stderr, "send(): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
       int file = open("404.html", O_RDONLY); if(file == -1) { perror("open(404.html)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(404.html)"); exit(EXIT_FAILURE); }
       { ssize_t sent = sendfile(client, file, NULL, file_stat.st_size); if(sent != file_stat.st_size) { if(sent == -1) perror("sendfile()"); else fprintf(stderr, "sendfile(): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
@@ -252,6 +279,7 @@ int main(int argc, char * argv[]) {
     if(close(client)) { perror("WARNING close(client)"); }
   }
 
+  free(child_stdout_buffer);
   if(shutdown(server, SHUT_RDWR)) { perror("WARNING shutdown(server)"); }
   if(close(server)) { perror("WARNING close(server)"); }
   return EXIT_SUCCESS;
