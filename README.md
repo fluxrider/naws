@@ -9,13 +9,16 @@ The server with no delusions of grandeur.
 # Features
 
 * Serves static files (e.g. web page, image, e-book).
-* Serves output of executable and python scripts.
+* Serves output of executables or python scripts.
 
 # Limitations
+* Partial implementation of HTTP GET (and nothing else).
 * IPv4 (and nothing else).
-* Accepts (only) connections from your home network.
 * Handles a single connection at a time.
+* Accepts (only) connections from the home network (I force it due to lack of HTTPS).
 
 # Roadmap
 
-* HTTPS, so I can use it outside my home network.
+* HTTPS (some), so I can use it outside my home network.
+* HTTP2 push
+* Concurrent connections (but nothing that scales, lets say 10).
