@@ -1,6 +1,7 @@
 import cgi
 import os
 import sys
+import time
 
 qs = cgi.FieldStorage()
 if 'user' in qs and qs['user'].value.isalpha():
@@ -23,3 +24,6 @@ python script for {user} at {os.getcwd()}.
 
 # force a 404
 # sys.exit(4)
+
+# get stuck
+# time.sleep(10)

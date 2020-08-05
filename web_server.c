@@ -233,7 +233,7 @@ int main(int argc, char * argv[]) {
       size_t child_stdout_buffer_size = HTTP_200_HEADER_LEN;
       while(true) {
         int polled = poll(fds, 3, timeout_ms); if(polled == -1) { perror("poll()"); exit(EXIT_FAILURE); }
-        if(poll == 0) {
+        if(polled == 0) {
           printf("WARNING poll() timed out\n");
         } else {
           bool read_something = false;
