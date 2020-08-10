@@ -119,7 +119,7 @@ int main(int argc, char * argv[]) {
     // receive
     ssize_t length = recv(client, &buffer, buffer_capacity, 0); if(length == -1) { perror("recv()"); exit(EXIT_FAILURE); }
     buffer[length] = '\0';
-    printf("received %zd bytes\n", length);
+    printf("recv() %zd bytes\n", length);
     if(length < 4) goto encountered_problem;
     if(strncmp(buffer, "GET ", 4)) {
 
@@ -213,7 +213,7 @@ int main(int argc, char * argv[]) {
       // if a program, fork and run
       switch(hash_djb2_ext) {
         case hash_djb2_:
-          if(access(uri, X_OK)) goto encountered_problem;
+          // note: I can't rely on execute permission so I don't bother testing here
           { struct stat uri_stat; if(!stat(uri, &uri_stat) && S_ISDIR(uri_stat.st_mode)) goto encountered_problem; }
           break;
         case hash_djb2_py:
@@ -245,8 +245,31 @@ int main(int argc, char * argv[]) {
         filename[-1] = '\0'; if(uri != filename && chdir(uri)) { perror("CHILD chdir(path)"); fprintf(stderr, "path: %s", uri); exit(EXIT_FAILURE); }
         switch(hash_djb2_ext) {
           case hash_djb2_: {
-            char * const args[] = { filename, NULL };
-            execve(filename, args, envp);
+            // executable
+            if(!access(uri, X_OK)) {
+              char * const args[] = { filename, NULL };
+              execve(filename, args, envp);
+            }
+            // not executable (manually try to parse first line for #!)
+            else {
+              int file = open(filename, O_RDONLY); if(file == -1) { perror("CHILD open(non-executable-program)"); exit(EXIT_FAILURE); }
+              char hash_bang[1025];
+              ssize_t n = read(file, hash_bang, 1024); if(n == -1) { perror("CHILD read(hash_bang)"); exit(EXIT_FAILURE); }
+              if(close(file)) { perror("CHILD WARNING close(non-executable-program)"); }
+              if(n < 2) { fprintf(stderr, "CHILD read(hash_bang) wasn't big enough for hash bang\n"); exit(EXIT_FAILURE); }
+              if(hash_bang[0] != '#' || hash_bang[1] != '!') { fprintf(stderr, "CHILD not hash bang\n"); exit(EXIT_FAILURE); }
+              hash_bang[n] = '\0';
+              char * line_sep = &hash_bang[2];
+              char * hash_bang_line = strsep(&line_sep, "\r\n");
+              char * args[] = { NULL, NULL, NULL, NULL };
+              char * command_name = strrchr(hash_bang_line, '/');
+              if(command_name) command_name += 1; else command_name = &hash_bang[2];
+              int i = 0;
+              args[i++] = command_name;
+              if(!strcmp(command_name, "python")) args[i++] = "-B";
+              args[i++] = filename;
+              execve(&hash_bang[2], args, envp);
+            }
             perror("CHILD execve()");
             break; }
           case hash_djb2_py: {
@@ -305,7 +328,7 @@ int main(int argc, char * argv[]) {
             if(child_has_stderr || child_exit != EXIT_SUCCESS) {
               // the child can ask to return 404 instead of 500 using the exit code 4
               if(child_exit == 4) { printf("WARNING child force 404\n"); goto encountered_problem; }
-              printf("WARNING encountered problem, replied 500\n");
+              printf("WARNING encountered problem (stderr=%d exit=%d), replied 500\n", child_has_stderr, child_exit);
               { ssize_t sent = send(client, HTTP_500_HEADER, HTTP_500_HEADER_LEN, MSG_MORE); if(sent != HTTP_500_HEADER_LEN) { if(sent == -1) perror("send()"); else fprintf(stderr, "send(): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
               int file = open("500.html", O_RDONLY); if(file == -1) { perror("open(500.html)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(500.html)"); exit(EXIT_FAILURE); }
               { ssize_t sent = sendfile(client, file, NULL, file_stat.st_size); if(sent != file_stat.st_size) { if(sent == -1) perror("sendfile()"); else fprintf(stderr, "sendfile(): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
