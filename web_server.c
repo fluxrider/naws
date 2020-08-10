@@ -266,15 +266,15 @@ int main(int argc, char * argv[]) {
               if(command_name) command_name += 1; else command_name = &hash_bang[2];
               int i = 0;
               args[i++] = command_name;
-              if(!strcmp(command_name, "python")) args[i++] = "-B";
+              if(!strcmp(command_name, "python3") || !strcmp(command_name, "python")) args[i++] = "-B";
               args[i++] = filename;
               execve(&hash_bang[2], args, envp);
             }
             perror("CHILD execve()");
             break; }
           case hash_djb2_py: {
-            char * const args[] = { "python", "-B", filename, NULL };
-            execve("/usr/bin/python", args, envp);
+            char * const args[] = { "python3", "-B", filename, NULL };
+            execve("/usr/bin/python3", args, envp);
             perror("CHILD execve()");
             break; }
         }
