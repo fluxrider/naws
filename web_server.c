@@ -355,6 +355,7 @@ int main(int argc, char * argv[]) {
 
     if(shutdown(client, SHUT_RDWR)) { perror("WARNING shutdown(client)"); }
     if(close(client)) { perror("WARNING close(client)"); }
+    printf("ACCESS done handling client\n");
   }
 
   free(child_stdout_buffer);
