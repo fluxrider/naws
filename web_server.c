@@ -45,6 +45,7 @@ uint32_t hash_djb2(const char * s) {
 #define hash_djb2_py 5863726
 #define hash_djb2_ 5381
 
+// mime type for various static files
 bool send_static_header(int client, uint32_t hash_djb2_ext) {
   const char * mime;
   switch(hash_djb2_ext) {
@@ -68,7 +69,7 @@ bool send_static_header(int client, uint32_t hash_djb2_ext) {
   return true;
 }
 
-// transform children end signal into a file descriptor
+// transform children end signal into a file descriptor (so I can use poll() with it)
 int setup_signalfd() {
   sigset_t mask;
   sigemptyset(&mask);
@@ -80,23 +81,40 @@ int setup_signalfd() {
   return signalfd(-1, &mask, SFD_CLOEXEC);
 }
 
+// main
 int main(int argc, char * argv[]) {
-  if(argc != 3) { fprintf(stderr, "usage: naws port root-folder\nexample: naws 8888 .\n"); exit(EXIT_FAILURE); }
+  if(argc != 4) { fprintf(stderr, "usage: naws private_port tor_port root-folder\nexample: naws 8888 8889 .\n"); exit(EXIT_FAILURE); }
 
   int sigchld_fd = setup_signalfd(); if(sigchld_fd == -1) { perror("signalfd()"); exit(EXIT_FAILURE); }
 
-  uint16_t port = strtol(argv[1], NULL, 10);
-  if(chdir(argv[2])) { perror("chdir(root)"); exit(EXIT_FAILURE); }
+  uint16_t private_port = strtol(argv[1], NULL, 10);
+  uint16_t tor_port = strtol(argv[2], NULL, 10);
+  if(chdir(argv[3])) { perror("chdir(root)"); exit(EXIT_FAILURE); }
 
-  // listen for clients
-  int server = socket(AF_INET, SOCK_STREAM, 0); if(server == -1) { perror("socket()"); exit(EXIT_FAILURE); }
-  if(setsockopt(server, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int))) { perror("setsockopt()"); exit(EXIT_FAILURE); }
-  if(bind(server, (const struct sockaddr *)&(struct sockaddr_in){AF_INET, htons(port), {INADDR_ANY}}, sizeof(struct sockaddr_in))) {
-    perror("bind()");
-    if(port < 1024) fprintf(stderr, "for privileged ports, ensure capability is set\nsudo setcap 'cap_net_bind_service=+ep' /path/to/program\n");
+  // setup sockets (for private network port and tor network port)
+  // in this context, the private server is meant for local network traffic only
+  // no credentials is asked for traffic on this port
+  int private_server = socket(AF_INET, SOCK_STREAM, 0); if(private_server == -1) { perror("socket()"); exit(EXIT_FAILURE); }
+  if(setsockopt(private_server, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int))) { perror("setsockopt()"); exit(EXIT_FAILURE); }
+  if(bind(private_server, (const struct sockaddr *)&(struct sockaddr_in){AF_INET, htons(private_port), {INADDR_ANY}}, sizeof(struct sockaddr_in))) {
+    perror("bind(private_server)");
+    if(private_port < 1024) fprintf(stderr, "for privileged ports, ensure capability is set\nsudo setcap 'cap_net_bind_service=+ep' /path/to/program\n");
     exit(EXIT_FAILURE);
   }
-  if(listen(server, 0)) { perror("listen()"); exit(EXIT_FAILURE); }
+  if(listen(private_server, 0)) { perror("listen()"); exit(EXIT_FAILURE); }
+  // in this context, what I call the tor server is a port that only accepts localhost connections
+  // as if torrc is setup like: HiddenServicePort 80 127.0.0.1:12345 where 12345 is the tor_port
+  // I later assume end-to-end encryption on this port, so that asking for credentials over http is sensical.
+  int tor_server = socket(AF_INET, SOCK_STREAM, 0); if(tor_server == -1) { perror("socket()"); exit(EXIT_FAILURE); }
+  if(setsockopt(tor_server, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int))) { perror("setsockopt()"); exit(EXIT_FAILURE); }
+  if(bind(tor_server, (const struct sockaddr *)&(struct sockaddr_in){AF_INET, htons(tor_port), {INADDR_ANY}}, sizeof(struct sockaddr_in))) {
+    perror("bind(tor_server)");
+    if(tor_port < 1024) fprintf(stderr, "for privileged ports, ensure capability is set\nsudo setcap 'cap_net_bind_service=+ep' /path/to/program\n");
+    exit(EXIT_FAILURE);
+  }
+  if(listen(tor_server, 0)) { perror("listen()"); exit(EXIT_FAILURE); }
+
+  // listen for clients
   struct sockaddr_in client_addr;
   const int buffer_capacity = 8191;
   uint8_t buffer[buffer_capacity + 1]; // room for a null char
@@ -104,17 +122,35 @@ int main(int argc, char * argv[]) {
   uint8_t * child_stdout_buffer = realloc(NULL, child_stdout_buffer_capacity);
   memcpy(child_stdout_buffer, HTTP_200_HEADER, HTTP_200_HEADER_LEN);
   while(true) {
-    int client = accept(server, (struct sockaddr *)&client_addr, &(socklen_t){sizeof(struct sockaddr_in)}); if(client == -1) { perror("accept()"); exit(EXIT_FAILURE); }
+    struct pollfd sockets[2];
+    sockets[0].fd = private_server;
+    sockets[1].fd = tor_server;
+    sockets[0].events = sockets[1].events = POLLIN;
+    int socked_polled = poll(sockets, 2, -1); if(socked_polled == -1) { perror("poll()"); exit(EXIT_FAILURE); }
+    int client = -1;
+    bool private_network_client = false;
+    if(sockets[0].revents & POLLIN) {
+      printf("ACCESS private network request\n");
+      client = accept(private_server, (struct sockaddr *)&client_addr, &(socklen_t){sizeof(struct sockaddr_in)}); if(client == -1) { perror("accept(private)"); exit(EXIT_FAILURE); }
+      private_network_client = true;
+    } else if(sockets[1].revents & POLLIN) {
+      printf("ACCESS tor network request\n");
+      client = accept(tor_server, (struct sockaddr *)&client_addr, &(socklen_t){sizeof(struct sockaddr_in)}); if(client == -1) { perror("accept(tor)"); exit(EXIT_FAILURE); }
+    }
+    if(client == -1) continue;
 
     // allow only the usual private IPv4 addresses
     uint8_t * ip = (uint8_t *)&client_addr.sin_addr.s_addr;
     printf("ACCESS client_address: %u.%u.%u.%u\n", ip[0], ip[1], ip[2], ip[3]);
     bool allowed_ip = false;
-    allowed_ip |= ip[0] == 192 && ip[1] == 168;
     allowed_ip |= ip[0] == 127 && ip[1] == 0 && ip[2] == 0 && ip[3] == 1;
+    if(private_network_client) allowed_ip |= ip[0] == 192 && ip[1] == 168;
     if(!allowed_ip) goto encountered_problem;
     // TODO would it be possible to behave exactly like if there was no server? filter ip with SO_ATTACH_BPF?
     // TODO if traffic from the internet/tor, turn on HTTPS/AUTH and turn server off on multi failed attempts
+
+    // TMP reject all tor connection until auth is in place
+    if(private_network_client) goto encountered_problem;
 
     // receive
     ssize_t length = recv(client, &buffer, buffer_capacity, 0); if(length == -1) { perror("recv()"); exit(EXIT_FAILURE); }
@@ -234,7 +270,7 @@ int main(int argc, char * argv[]) {
         if(close(pipe_out[1])) { perror("CHILD close(pipe_out)"); exit(EXIT_FAILURE); }
         if(close(pipe_err[0])) { perror("CHILD close(pipe_err)"); exit(EXIT_FAILURE); }
         if(close(pipe_err[1])) { perror("CHILD close(pipe_err)"); exit(EXIT_FAILURE); }
-        if(close(server)) { perror("CHILD close(server)"); exit(EXIT_FAILURE); }
+        if(close(private_server)) { perror("CHILD close(private_server)"); exit(EXIT_FAILURE); }
         if(close(client)) { perror("CHILD close(client)"); exit(EXIT_FAILURE); }
         int cap = 1024 + 13 + 1;
         char query_string_env[cap];
@@ -359,7 +395,7 @@ int main(int argc, char * argv[]) {
   }
 
   free(child_stdout_buffer);
-  if(shutdown(server, SHUT_RDWR)) { perror("WARNING shutdown(server)"); }
-  if(close(server)) { perror("WARNING close(server)"); }
+  if(shutdown(private_server, SHUT_RDWR)) { perror("WARNING shutdown(private_server)"); }
+  if(close(private_server)) { perror("WARNING close(private_server)"); }
   return EXIT_SUCCESS;
 }
