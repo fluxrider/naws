@@ -150,7 +150,7 @@ int main(int argc, char * argv[]) {
     // TODO if traffic from the internet/tor, turn on HTTPS/AUTH and turn server off on multi failed attempts
 
     // TMP reject all tor connection until auth is in place
-    if(private_network_client) goto encountered_problem;
+    if(!private_network_client) goto encountered_problem;
 
     // receive
     ssize_t length = recv(client, &buffer, buffer_capacity, 0); if(length == -1) { perror("recv()"); exit(EXIT_FAILURE); }
