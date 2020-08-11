@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8" />
+<title>401 Unauthorized</title>
+<script src="scrypt.js"></script><!-- LICENSE https://github.com/tonyg/js-scrypt -->
+<script src="dchest_tweetnacl.js"></script>
+<script>
+function gen_cookie() { scrypt_module_factory(on_scrypt, { requested_total_memory: 131072 * 2048 }); function on_scrypt(scrypt) {
+  var username = document.getElementById("username").value;
+  var passphrase = document.getElementById("passphrase").value;
+
+  // private_key = key_derivation_function(passphrase)
+  var private_key = scrypt.crypto_scrypt(
+    scrypt.encode_utf8(passphrase),
+    scrypt.encode_utf8("static_salt"),
+    131072, 8, 1, 32
+  );
+  var my_keys = nacl.box.keyPair.fromSecretKey(private_key)
+
+  // NOTE: a derived public key has been registed for this username through other means
+  // alert(nacl.util.encodeBase64(my_keys.publicKey))
+  
+  const nonce = nacl.randomBytes(nacl.secretbox.nonceLength);
+  const message = nacl.util.decodeUTF8('Hello Alice');
+  const encrypted = nacl.box(message, nonce, server_keys.publicKey, my_keys.secretKey);
+)
+
+  // cookie = username + sign(private_key, SERVER_SIGNED_TIMESTAMP)
+}}
+
+function set_cookie(cname, cvalue, exdays) {
+  var d = new Date(); d.setTime(d.getTime() + (exdays * 24 * 60 * 60 * 1000));
+  document.cookie = cname + "=" + cvalue + ";expires=" + d.toUTCString() + ";path=/";
+}
+</script>
+</head><body>
+401 Unauthorized<br/>
+<label for="username">Username:</label>
+<input type="text" id="username" placeholder="e.g. john"/><br/><br/>
+<label for="passphrase">Passphrase:</label>
+<input type="text" id="passphrase" placeholder="e.g. elephant in the room"/><br/><br/>
+<input type="button" value="Generate signed cookie" onclick="gen_cookie();"/><br/><br/>
+<a href="">Try again</a>
+</body>
+</html>

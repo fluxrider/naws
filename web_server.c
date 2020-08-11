@@ -149,9 +149,6 @@ int main(int argc, char * argv[]) {
     // TODO would it be possible to behave exactly like if there was no server? filter ip with SO_ATTACH_BPF?
     // TODO if traffic from the internet/tor, turn on HTTPS/AUTH and turn server off on multi failed attempts
 
-    // TMP reject all tor connection until auth is in place
-    if(!private_network_client) goto encountered_problem;
-
     // receive
     ssize_t length = recv(client, &buffer, buffer_capacity, 0); if(length == -1) { perror("recv()"); exit(EXIT_FAILURE); }
     buffer[length] = '\0';
@@ -223,6 +220,7 @@ int main(int argc, char * argv[]) {
           i++;
       }
     }
+    char * the_rest = &buffer[i+1];
     if(!query_string) query_string = "";
     printf("ACCESS uri: %s query: %s\n", uri, query_string);
     if(uri[0] != '/') goto encountered_problem;
@@ -235,6 +233,14 @@ int main(int argc, char * argv[]) {
     printf("uri: %s\n", uri);
     printf("filename: %s\n", filename);
     printf("ext: %s\n", ext);
+    
+    // auth
+    if(!private_network_client) {
+      printf("AUTH\n");
+      printf("%s\n", the_rest);
+      // TODO parse cookie
+      goto auth_form;
+    }
 
     // verify access of local_uri
     if(access(uri, R_OK)) goto encountered_problem;
@@ -367,7 +373,7 @@ int main(int argc, char * argv[]) {
               printf("WARNING encountered problem (stderr=%d exit=%d), replied 500\n", child_has_stderr, child_exit);
               { ssize_t sent = send(client, HTTP_500_HEADER, HTTP_500_HEADER_LEN, MSG_MORE); if(sent != HTTP_500_HEADER_LEN) { if(sent == -1) perror("send()"); else fprintf(stderr, "send(): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
               int file = open("500.html", O_RDONLY); if(file == -1) { perror("open(500.html)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(500.html)"); exit(EXIT_FAILURE); }
-              { ssize_t sent = sendfile(client, file, NULL, file_stat.st_size); if(sent != file_stat.st_size) { if(sent == -1) perror("sendfile()"); else fprintf(stderr, "sendfile(): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
+              { ssize_t sent = sendfile(client, file, NULL, file_stat.st_size); if(sent != file_stat.st_size) { if(sent == -1) perror("sendfile()"); else fprintf(stderr, "sendfile(500): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
               if(close(file)) { perror("close(500.html)"); exit(EXIT_FAILURE); }
             }
             // child program success
@@ -380,12 +386,21 @@ int main(int argc, char * argv[]) {
       }
     }
 
+    // auth form
+    goto skip_auth_form; auth_form: {
+      printf("WARNING require authentification\n");
+      send_static_header(client, hash_djb2_html);
+      int file = open("401.html", O_RDONLY); if(file == -1) { perror("open(401.html)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(401.html)"); exit(EXIT_FAILURE); }
+      { ssize_t sent = sendfile(client, file, NULL, file_stat.st_size); if(sent != file_stat.st_size) { if(sent == -1) perror("sendfile()"); else fprintf(stderr, "sendfile(401): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
+      if(close(file)) { perror("close(401.html)"); exit(EXIT_FAILURE); }
+    } skip_auth_form:
+
     // if any problem arised, do 404 instead
     goto skip_encountered_problem; encountered_problem: {
       printf("WARNING encountered problem, replied 404\n");
       { ssize_t sent = send(client, HTTP_404_HEADER, HTTP_404_HEADER_LEN, MSG_MORE); if(sent != HTTP_404_HEADER_LEN) { if(sent == -1) perror("send()"); else fprintf(stderr, "send(): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
       int file = open("404.html", O_RDONLY); if(file == -1) { perror("open(404.html)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(404.html)"); exit(EXIT_FAILURE); }
-      { ssize_t sent = sendfile(client, file, NULL, file_stat.st_size); if(sent != file_stat.st_size) { if(sent == -1) perror("sendfile()"); else fprintf(stderr, "sendfile(): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
+      { ssize_t sent = sendfile(client, file, NULL, file_stat.st_size); if(sent != file_stat.st_size) { if(sent == -1) perror("sendfile()"); else fprintf(stderr, "sendfile(404): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
       if(close(file)) { perror("close(404.html)"); exit(EXIT_FAILURE); }
     } skip_encountered_problem:
 
