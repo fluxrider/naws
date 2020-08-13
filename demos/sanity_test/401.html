@@ -3,7 +3,7 @@
 <title>401 Unauthorized</title>
 <!-- NOTE: any scripts that this page needs is hardcoded in a no-auth list on the server -->
 <script src="ricmoo.scrypt.with_libs.js"></script><!-- LICENSE https://github.com/ricmoo/scrypt-js -->
-<script src="sodium.js"></script><!-- LICENSE https://github.com/jedisct1/libsodium.js -->
+<script src="sodium.js"></script><!-- browser-sumo version, LICENSE https://github.com/jedisct1/libsodium.js -->
 <script>
 function gen_cookie() { 
   const button = document.getElementById("my_button");
@@ -11,15 +11,15 @@ function gen_cookie() {
   const passphrase = sodium.from_string(document.getElementById("passphrase").value.normalize('NFKC'));
 
   // private_key = key_derivation_function(passphrase)
-  function update_interface(progress) {
-    button.value = "key derivation: " + progress;
-  }
+  function update_interface(progress) { button.value = "key derivation: " + progress; }
   const salt = sodium.from_string("static_salt".normalize('NFKC'));
-  const N = 131072, r = 8, p = 1;
-  const dkLen = 32;
-  const keyPromise = scrypt.scrypt(passphrase, salt, N, r, p, dkLen, update_interface);
-  keyPromise.then(function(key) {
-    alert("Derived Key (async): " + key);
+  const N = 1024 /*131072*/, r = 8, p = 1;
+  const keyPromise = scrypt.scrypt(passphrase, salt, N, r, p, 32, update_interface);
+  keyPromise.then(function(private_key) {
+    // NOTE: it is assumed a derived public key has been registed for this username through other means
+    alert(sodium.to_base64(sodium.crypto_scalarmult_base(private_key), sodium.base64_variants.ORIGINAL));
+    
+    const nonce = sodium.randombytes_buf(sodium.crypto_box_NONCEBYTES);
   });
 
     /*
@@ -31,7 +31,6 @@ function gen_cookie() {
     set_cookie("nasm_username", nacl.util.encodeBase64(nacl.util.decodeUTF8(username)), 2);
     set_cookie("nasm_credentials", nacl.util.encodeBase64(encrypted), 2);
 
-    // NOTE: a derived public key has been registed for this username through other means
     // const my_keys = nacl.box.keyPair.fromSecretKey(private_key)
     // alert(nacl.util.encodeBase64(my_keys.publicKey))
     */
