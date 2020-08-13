@@ -309,7 +309,7 @@ int main(int argc, char * argv[]) {
     printf("ext: %s\n", ext);
     
     // auth
-    if(!private_network_client) {
+    if(!private_network_client && strcmp(filename, "scrypt.js") && strcmp(filename, "dchest_tweetnacl.js")) {
       printf("AUTH\n");
       printf("%s\n", the_rest);
       // TODO parse cookie

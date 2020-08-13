@@ -21,8 +21,8 @@ function gen_cookie() { scrypt_module_factory(on_scrypt, { requested_total_memor
   const server_public_key = SRV_PUB;
   const message = SRV_MSG;
   const encrypted = nacl.box(message, nonce, server_public_key, private_key);
-  set_cookie("nasm_username", nacl.util.encodeBase64(nacl.util.decodeUTF8(username)));
-  set_cookie("nasm_credentials", nacl.util.encodeBase64(encrypted));
+  set_cookie("nasm_username", nacl.util.encodeBase64(nacl.util.decodeUTF8(username)), 2);
+  set_cookie("nasm_credentials", nacl.util.encodeBase64(encrypted), 2);
 
   // NOTE: a derived public key has been registed for this username through other means
   // const my_keys = nacl.box.keyPair.fromSecretKey(private_key)
