@@ -8,13 +8,13 @@
 function gen_cookie() { 
   const button = document.getElementById("my_button");
   const username = document.getElementById("username").value.normalize('NFKC');
-  const passphrase = new buffer.SlowBuffer(document.getElementById("passphrase").value.normalize('NFKC'));
+  const passphrase = sodium.from_string(document.getElementById("passphrase").value.normalize('NFKC'));
 
   // private_key = key_derivation_function(passphrase)
   function update_interface(progress) {
     button.value = "key derivation: " + progress;
   }
-  const salt = new buffer.SlowBuffer("static_salt".normalize('NFKC'));
+  const salt = sodium.from_string("static_salt".normalize('NFKC'));
   const N = 131072, r = 8, p = 1;
   const dkLen = 32;
   const keyPromise = scrypt.scrypt(passphrase, salt, N, r, p, dkLen, update_interface);
