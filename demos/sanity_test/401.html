@@ -2,32 +2,40 @@
 <html lang="en"><head><meta charset="utf-8" />
 <title>401 Unauthorized</title>
 <!-- NOTE: any scripts that this page needs is hardcoded in a no-auth list on the server -->
-<script src="scrypt.js"></script><!-- LICENSE https://github.com/tonyg/js-scrypt -->
-<script src="dchest_tweetnacl.js"></script>
+<script src="ricmoo.scrypt.with_libs.js"></script><!-- LICENSE https://github.com/ricmoo/scrypt-js -->
+<script src="sodium.js"></script><!-- LICENSE https://github.com/jedisct1/libsodium.js -->
 <script>
-function gen_cookie() { scrypt_module_factory(on_scrypt, { requested_total_memory: 131072 * 2048 }); function on_scrypt(scrypt) {
-  const username = document.getElementById("username").value;
-  const passphrase = document.getElementById("passphrase").value;
+function gen_cookie() { 
+  const button = document.getElementById("my_button");
+  const username = document.getElementById("username").value.normalize('NFKC');
+  const passphrase = new buffer.SlowBuffer(document.getElementById("passphrase").value.normalize('NFKC'));
 
   // private_key = key_derivation_function(passphrase)
-  const private_key = scrypt.crypto_scrypt(
-    scrypt.encode_utf8(passphrase),
-    scrypt.encode_utf8("static_salt"),
-    131072, 8, 1, 32
-  );
+  function update_interface(progress) {
+    button.value = "key derivation: " + progress;
+  }
+  const salt = new buffer.SlowBuffer("static_salt".normalize('NFKC'));
+  const N = 131072, r = 8, p = 1;
+  const dkLen = 32;
+  const keyPromise = scrypt.scrypt(passphrase, salt, N, r, p, dkLen, update_interface);
+  keyPromise.then(function(key) {
+    alert("Derived Key (async): " + key);
+  });
 
-  // cookie = username + encrypt(server_timestamp)
-  const nonce = nacl.randomBytes(nacl.secretbox.nonceLength); 
-  const server_public_key = SRV_PUB;
-  const message = SRV_MSG;
-  const encrypted = nacl.box(message, nonce, server_public_key, private_key);
-  set_cookie("nasm_username", nacl.util.encodeBase64(nacl.util.decodeUTF8(username)), 2);
-  set_cookie("nasm_credentials", nacl.util.encodeBase64(encrypted), 2);
+    /*
+    // cookie = username + encrypt(server_timestamp)
+    const nonce = nacl.randomBytes(nacl.secretbox.nonceLength); 
+    const server_public_key = SRV_PUB;
+    const message = SRV_MSG;
+    const encrypted = nacl.box(message, nonce, server_public_key, private_key);
+    set_cookie("nasm_username", nacl.util.encodeBase64(nacl.util.decodeUTF8(username)), 2);
+    set_cookie("nasm_credentials", nacl.util.encodeBase64(encrypted), 2);
 
-  // NOTE: a derived public key has been registed for this username through other means
-  // const my_keys = nacl.box.keyPair.fromSecretKey(private_key)
-  // alert(nacl.util.encodeBase64(my_keys.publicKey))
-}}
+    // NOTE: a derived public key has been registed for this username through other means
+    // const my_keys = nacl.box.keyPair.fromSecretKey(private_key)
+    // alert(nacl.util.encodeBase64(my_keys.publicKey))
+    */
+}
 
 function set_cookie(cname, cvalue, exdays) {
   var d = new Date(); d.setTime(d.getTime() + (exdays * 24 * 60 * 60 * 1000));
@@ -41,7 +49,7 @@ function set_cookie(cname, cvalue, exdays) {
 <input type="text" id="username" placeholder="e.g. john"/><br/><br/>
 <label for="passphrase">Passphrase:</label>
 <input type="text" id="passphrase" placeholder="e.g. elephant in the room"/><br/><br/>
-<input type="button" value="Generate signed cookie" onclick="gen_cookie();"/><br/><br/>
+<input type="button" id="my_button" value="Generate signed cookie" onclick="gen_cookie();"/><br/><br/>
 <a href="">Try again</a>
 </body>
 </html>
