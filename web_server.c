@@ -85,7 +85,7 @@ int setup_signalfd() {
 // send a file to a socket, but search and replace a few things as we go
 // note: for performance reasons, only the first occurence will be replaced
 // side effect: the arrays from/to will be modified in place for performance reasons as well
-void send_template_file(int socket, int file, struct stat * file_stat, const char * from[], const char * to[], int n) {
+void send_template_file(int socket, int file, const char * from[], const char * to[], int n) {
   size_t max_from_len = 0; for(int i = 0; i < n; i++) { size_t len = strlen(from[i]); if(len > max_from_len) max_from_len = len; }
   size_t K = 1024;
   size_t buffer_cap = K + max_from_len;
@@ -463,13 +463,20 @@ int main(int argc, char * argv[]) {
     // auth form
     goto skip_auth_form; auth_form: {
       printf("WARNING require authentification\n");
+      // read public key
+      int file = open("public.key", O_RDONLY); if(file == -1) { perror("open(public.key)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(public.key)"); exit(EXIT_FAILURE); }
+      char public_key[file_stat.st_size + 1];
+      public_key[file_stat.st_size] = '\0';
+      ssize_t n = read(file, public_key, file_stat.st_size); if(n != file_stat.st_size) { if(n == -1) perror("read(public.key)"); else fprintf(stderr, "read(public.key): couldn't read whole key\n"); exit(EXIT_FAILURE); }
+      if(close(file)) { perror("close(public.key)"); exit(EXIT_FAILURE); }
+      // send login page
       send_static_header(client, hash_djb2_html);
-      int file = open("401.html", O_RDONLY); if(file == -1) { perror("open(401.html)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(401.html)"); exit(EXIT_FAILURE); }
+      file = open("401.html", O_RDONLY); if(file == -1) { perror("open(401.html)"); exit(EXIT_FAILURE); }
       const char * from[2];
       const char * to[2];
-      from[0] = "SRV_PUB"; to[0] = "hello";
-      from[1] = "SRV_MSG"; to[1] = "baba";
-      send_template_file(client, file, &file_stat, from, to, 2);
+      from[0] = "SRV_PUB"; to[0] = public_key;
+      from[1] = "SRV_MSG"; to[1] = "new Uint8Array([1,2,3,4,5,6,7,8,9])"; // TODO encrypt date using a symetric key
+      send_template_file(client, file, from, to, 2);
       if(close(file)) { perror("close(401.html)"); exit(EXIT_FAILURE); }
     } skip_auth_form:
 
