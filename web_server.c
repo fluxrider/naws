@@ -87,7 +87,7 @@ int setup_signalfd() {
 // side effect: the arrays from/to will be modified in place for performance reasons as well
 void send_template_file(int socket, int file, struct stat * file_stat, const char * from[], const char * to[], int n) {
   size_t max_from_len = 0; for(int i = 0; i < n; i++) { size_t len = strlen(from[i]); if(len > max_from_len) max_from_len = len; }
-  size_t K = 10;
+  size_t K = 1024;
   size_t buffer_cap = K + max_from_len;
   uint8_t buffer[buffer_cap + 1];
   char * found[n];
@@ -95,16 +95,17 @@ void send_template_file(int socket, int file, struct stat * file_stat, const cha
   size_t shifted = 0;
   while(readn) {
     if(readn == -1) { perror("read(send_template_file)"); exit(EXIT_FAILURE); }
+    readn += shifted;
     buffer[readn] = '\0';
     // search for the substring
     for(int i = 0; i < n; i++) { found[i] = strstr(buffer, from[i]); }
-    // sort the findings (side effect: reorder from/to)
+    // sort the findings (side effect: reorder from/to) [but NULL is considered the highest instead of lowest value]
     for(int i = 1; i < n; i++) {
       char * x = found[i];
       const char * f = from[i];
       const char * t = to[i];
       int j;
-      for(j = i - 1; j >= 0 && found[j] > x; j--) {
+      for(j = i - 1; j >= 0 && ((found[j] > x && x) || !found[j]); j--) {
         found[j+1] = found[j];
         from[j+1] = from[j];
         to[j+1] = to[j];
