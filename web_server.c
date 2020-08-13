@@ -14,6 +14,7 @@
 #include <signal.h>
 #include <sys/signalfd.h>
 #include <errno.h>
+#include <stdarg.h>
 
 #define HTTP_404_HEADER "HTTP/1.1 404 Not Found\r\nContent-Type:text/html;charset=utf-8\r\n\r\n"
 #define HTTP_404_HEADER_LEN (sizeof(HTTP_404_HEADER) - 1)
@@ -79,6 +80,78 @@ int setup_signalfd() {
   if(sigprocmask(SIG_BLOCK, &mask, NULL) == -1) { perror("sigprocmask"); exit(EXIT_FAILURE); }
 
   return signalfd(-1, &mask, SFD_CLOEXEC);
+}
+
+// send a file to a socket, but search and replace a few things as we go
+// note: for performance reasons, only the first occurence will be replaced
+// side effect: the arrays from/to will be modified in place for performance reasons as well
+void send_template_file(int socket, int file, struct stat * file_stat, const char * from[], const char * to[], int n) {
+  size_t max_from_len = 0; for(int i = 0; i < n; i++) { size_t len = strlen(from[i]); if(len > max_from_len) max_from_len = len; }
+  size_t K = 10;
+  size_t buffer_cap = K + max_from_len;
+  uint8_t buffer[buffer_cap + 1];
+  char * found[n];
+  size_t readn = read(file, buffer, buffer_cap);
+  size_t shifted = 0;
+  while(readn) {
+    if(readn == -1) { perror("read(send_template_file)"); exit(EXIT_FAILURE); }
+    buffer[readn] = '\0';
+    // search for the substring
+    for(int i = 0; i < n; i++) { found[i] = strstr(buffer, from[i]); }
+    // sort the findings (side effect: reorder from/to)
+    for(int i = 1; i < n; i++) {
+      char * x = found[i];
+      const char * f = from[i];
+      const char * t = to[i];
+      int j;
+      for(j = i - 1; j >= 0 && found[j] > x; j--) {
+        found[j+1] = found[j];
+        from[j+1] = from[j];
+        to[j+1] = to[j];
+      }
+      found[j+1] = x;
+      from[j+1] = f;
+      to[j+1] = t;
+    }
+    // send bytes up to each find, and their to[] entry
+    uint8_t * head = &buffer[0];
+    while(n > 0 && found[0]) {
+      size_t count = (uint8_t *)found[0] - head;
+      ssize_t sent;
+      sent = send(socket, head, count, MSG_MORE); if(sent != count) { if(sent == -1) perror("send(send_template_file)"); else fprintf(stderr, "send(send_template_file): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); }
+      readn -= sent;
+      size_t len = strlen(to[0]);
+      sent = send(socket, to[0], len, MSG_MORE); if(sent != len) { if(sent == -1) perror("send(send_template_file)"); else fprintf(stderr, "send(send_template_file): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); }
+      len = strlen(from[0]);
+      head = found[0] + len;
+      readn -= len;
+      // erase from/to entry
+      for(int i = 1; i < n; i++) {
+        found[i-1] = found[i];
+        from[i-1] = from[i];
+        to[i-1] = to[i];
+      }
+      n--;
+    }
+    // send rest of the bytes (except the overflow of partial match if it's still there and we still care)
+    if(n == 0) {
+      ssize_t sent = send(socket, head, readn, MSG_MORE); if(sent != readn) { if(sent == -1) perror("send(send_template_file)"); else fprintf(stderr, "send(send_template_file): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); }
+      readn = read(file, buffer, buffer_cap);
+      shifted = 0;
+    } else {
+      if(readn > max_from_len) {
+        ssize_t sent = send(socket, head, readn - max_from_len, MSG_MORE); if(sent != readn - max_from_len) { if(sent == -1) perror("send(send_template_file)"); else fprintf(stderr, "send(send_template_file): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); }
+        head += readn - max_from_len;
+        readn = max_from_len;
+      }
+      // shift overflow and read up to K more bytes
+      if(readn > 0) memmove(buffer, head, readn);
+      shifted = readn;
+      readn = read(file, buffer + readn, buffer_cap - readn);
+    }
+  }
+  // send what is left in buffer (the max_from_len), or send nothing
+  ssize_t sent = send(socket, buffer, shifted, 0); if(sent != shifted) { if(sent == -1) perror("send(send_template_file)"); else fprintf(stderr, "send(send_template_file): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); }
 }
 
 // main
@@ -391,7 +464,11 @@ int main(int argc, char * argv[]) {
       printf("WARNING require authentification\n");
       send_static_header(client, hash_djb2_html);
       int file = open("401.html", O_RDONLY); if(file == -1) { perror("open(401.html)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(401.html)"); exit(EXIT_FAILURE); }
-      { ssize_t sent = sendfile(client, file, NULL, file_stat.st_size); if(sent != file_stat.st_size) { if(sent == -1) perror("sendfile()"); else fprintf(stderr, "sendfile(401): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
+      const char * from[2];
+      const char * to[2];
+      from[0] = "SRV_PUB"; to[0] = "hello";
+      from[1] = "SRV_MSG"; to[1] = "baba";
+      send_template_file(client, file, &file_stat, from, to, 2);
       if(close(file)) { perror("close(401.html)"); exit(EXIT_FAILURE); }
     } skip_auth_form:
 
