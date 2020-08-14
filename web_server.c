@@ -16,6 +16,10 @@
 #include <errno.h>
 #include <stdarg.h>
 
+static bool starts_with(const char * s, const char * start) {
+  return strncmp(start, s, strlen(start)) == 0;
+}
+
 #define HTTP_404_HEADER "HTTP/1.1 404 Not Found\r\nContent-Type:text/html;charset=utf-8\r\n\r\n"
 #define HTTP_404_HEADER_LEN (sizeof(HTTP_404_HEADER) - 1)
 #define HTTP_500_HEADER "HTTP/1.1 500 Internal Server Error\r\nContent-Type:text/html;charset=utf-8\r\n\r\n"
@@ -224,6 +228,7 @@ int main(int argc, char * argv[]) {
     // TODO if traffic from the internet/tor, turn on HTTPS/AUTH and turn server off on multi failed attempts
 
     // receive
+    // TODO firefox keeps sending these fake empty connection. I need to be able to filter them out. They cause 0 length recv.
     ssize_t length = recv(client, &buffer, buffer_capacity, 0); if(length == -1) { perror("recv()"); exit(EXIT_FAILURE); }
     buffer[length] = '\0';
     printf("recv() %zd bytes\n", length);
@@ -313,6 +318,38 @@ int main(int argc, char * argv[]) {
       printf("AUTH\n");
       printf("%s\n", the_rest);
       // TODO parse cookie
+      // Cookie: nasm_username=ZGVtbw==; nasm_proof=adxokTcEsJ5SeqRZuvLIOxPu7xrdPUCqIA==; nasm_proof_nonce=pw7Y+xXOeWLrXx0B+XhjqRkQ53+ckStR
+      char * cookie_username_base64 = NULL;
+      char * cookie_proof_base64 = NULL;
+      char * cookie_nonce_base64 = NULL;
+      while(*the_rest) {
+        if(starts_with(the_rest, "\nCookie: ")) {
+          printf("Parsing cookie line\n");
+          bool last_token = false;
+          char * token = the_rest + 9;
+          do {
+            char * p = token; while(*p && *p != ';' && *p != '\n') p++;
+            last_token = !*p || *p == '\n';
+            *p = '\0';
+            printf("cookie token: %s\n", token);
+            if(starts_with(token, "nasm_username=")) cookie_username_base64 = strchr(token, '=');
+            else if(starts_with(token, "nasm_proof=")) cookie_proof_base64 = strchr(token, '=');
+            else if(starts_with(token, "nasm_proof_nonce=")) cookie_nonce_base64 = strchr(token, '=');
+            token = p + 1;
+            while(*token && *token == ' ') token++;
+          } while(!last_token);
+          break;
+        }
+        the_rest++;
+      }
+      if(cookie_username_base64 && cookie_proof_base64 && cookie_nonce_base64) {
+        cookie_username_base64++;
+        cookie_proof_base64++;
+        cookie_nonce_base64++;
+        printf("Got a few things %s\n", cookie_proof_base64);
+      } else {
+        printf("No cookies\n");
+      }
       goto auth_form;
     }
 
