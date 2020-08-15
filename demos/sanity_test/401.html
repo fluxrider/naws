@@ -8,16 +8,18 @@
 function gen_cookie() { 
   const button = document.getElementById("my_button");
   const username = document.getElementById("username").value.normalize('NFKC');
-  const passphrase = sodium.from_string(document.getElementById("passphrase").value.normalize('NFKC'));
+  const passphrase = document.getElementById("passphrase").value.normalize('NFKC');
+  // passphrase + username + app_name to weaken same passphrase detection
+  const password = sodium.from_string(passphrase + username + "demo_sanity_test");
 
-  // private_key = key_derivation_function(passphrase)
+  // private_key = key_derivation_function(password)
   function update_interface(progress) { button.value = "key derivation: " + progress; }
   const salt = sodium.from_string("static_salt".normalize('NFKC'));
   const N = 131072, r = 8, p = 1;
-  const keyPromise = scrypt.scrypt(passphrase, salt, N, r, p, 32, update_interface);
+  const keyPromise = scrypt.scrypt(password, salt, N, r, p, 32, update_interface);
   keyPromise.then(function(private_key) {
     // NOTE: it is assumed a derived public key has been registed on the server for this username through other means
-    //alert(sodium.to_base64(sodium.crypto_scalarmult_base(private_key), sodium.base64_variants.ORIGINAL));
+    alert(sodium.to_base64(sodium.crypto_scalarmult_base(private_key), sodium.base64_variants.ORIGINAL));
     // e.g. server can: echo -n 'base64string' | base64 -d > username.key
     
     // cookie = username + encrypt(server_timestamp)

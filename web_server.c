@@ -1,4 +1,6 @@
 // Copyright 2020 David Lareau. This program is free software under the terms of the GPL-3.0-or-later.
+// gcc web_server.c $(pkg-config --libs --cflags libsodium) && ./a.out 8888 8889 demos/sanity_test
+// TODO load libsodium dynamically so that I don't have to compile with support for it (and that users that don't care about public ports don't have to install libsodium)
 #include <unistd.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -15,6 +17,7 @@
 #include <sys/signalfd.h>
 #include <errno.h>
 #include <stdarg.h>
+#include <sodium.h>
 
 static bool starts_with(const char * s, const char * start) {
   return strncmp(start, s, strlen(start)) == 0;
@@ -318,7 +321,6 @@ int main(int argc, char * argv[]) {
       printf("AUTH\n");
       printf("%s\n", the_rest);
       // TODO parse cookie
-      // Cookie: nasm_username=ZGVtbw==; nasm_proof=adxokTcEsJ5SeqRZuvLIOxPu7xrdPUCqIA==; nasm_proof_nonce=pw7Y+xXOeWLrXx0B+XhjqRkQ53+ckStR
       char * cookie_username_base64 = NULL;
       char * cookie_proof_base64 = NULL;
       char * cookie_nonce_base64 = NULL;
@@ -346,12 +348,60 @@ int main(int argc, char * argv[]) {
         cookie_username_base64++;
         cookie_proof_base64++;
         cookie_nonce_base64++;
-        printf("Got a few things %s\n", cookie_proof_base64);
+        // decode base64 username
+        printf("a %s\n", cookie_username_base64);
+        unsigned char cookie_username[128+1]; size_t cookie_username_len;
+        if(sodium_base642bin(cookie_username, 128, cookie_username_base64, strlen(cookie_username_base64), NULL, &cookie_username_len, NULL, 0)) { printf("ERROR AUTH sodium_base642bin(cookie_username)\n"); goto auth_form; }
+        printf("a2 %zu\n", cookie_username_len);
+        cookie_username[cookie_username_len] = '\0';
+        // is username legal? (i.e. no slash allowed)
+        printf("b\n");
+        if(strchr(cookie_username, '/')) { printf("ERROR AUTH illegal name %s\n", cookie_username); goto auth_form; }
+        // do we have a user by this name?
+        printf("c\n");
+        char * tmp_buffer = child_stdout_buffer;
+        sprintf(tmp_buffer, "users/%s.key", cookie_username);
+        if(access(tmp_buffer, R_OK)) { printf("ERROR AUTH user does not exist %s\n", cookie_username); goto auth_form; }
+        // load user's public key
+        printf("d\n");
+        unsigned char user_public_key[crypto_box_PUBLICKEYBYTES];
+        {
+          int file = open(tmp_buffer, O_RDONLY); if(file == -1) { perror("open(user.key)"); exit(EXIT_FAILURE); }
+          ssize_t n = read(file, user_public_key, crypto_box_PUBLICKEYBYTES); if(n == -1) { perror("read(user.key)"); exit(EXIT_FAILURE); }
+          if(n != crypto_box_PUBLICKEYBYTES) { fprintf(stderr, "read(crypto_box_PUBLICKEYBYTES)\n"); exit(EXIT_FAILURE); }
+          if(close(file)) { perror("close(user.key)"); exit(EXIT_FAILURE); }
+        }
+        // decode base64 nonce + proof
+        printf("e\n");
+        unsigned char cookie_nonce[crypto_box_NONCEBYTES]; size_t cookie_nonce_len;
+        if(sodium_base642bin(cookie_nonce, crypto_box_NONCEBYTES, cookie_nonce_base64, strlen(cookie_nonce_base64), NULL, &cookie_nonce_len, NULL, 0)) { printf("ERROR AUTH sodium_base642bin(cookie_nonce_base64)\n"); goto auth_form; }
+        if(cookie_nonce_len != crypto_box_NONCEBYTES) { printf("ERROR AUTH nonce wrong length\n"); goto auth_form; }
+        unsigned char cookie_proof[1024]; size_t cookie_proof_len;
+        if(sodium_base642bin(cookie_proof, 1024, cookie_proof_base64, strlen(cookie_proof_base64), NULL, &cookie_proof_len, NULL, 0)) { printf("ERROR AUTH sodium_base642bin(cookie_proof_base64)\n"); goto auth_form; }
+        // load server's private key
+        printf("f\n");
+        unsigned char server_secret_key[crypto_box_SECRETKEYBYTES];
+        {
+          int file = open("secret.key", O_RDONLY); if(file == -1) { perror("open(secret.key)"); exit(EXIT_FAILURE); }
+          ssize_t n = read(file, server_secret_key, crypto_box_SECRETKEYBYTES); if(n == -1) { perror("read(secret.key)"); exit(EXIT_FAILURE); }
+          if(n != crypto_box_SECRETKEYBYTES) { fprintf(stderr, "read(crypto_box_SECRETKEYBYTES)\n"); exit(EXIT_FAILURE); }
+          if(close(file)) { explicit_bzero(server_secret_key, crypto_box_SECRETKEYBYTES); perror("close(secret.key)"); exit(EXIT_FAILURE); }
+        }
+        // can we decrypt the proof?
+        printf("g\n");
+        unsigned char decrypted[1024];
+        if(crypto_box_open_easy(decrypted, cookie_proof, cookie_proof_len, cookie_nonce, user_public_key, server_secret_key)) { explicit_bzero(server_secret_key, crypto_box_SECRETKEYBYTES); perror("WARNING could not decrypt proof. Foulplay or did server change key recently?"); goto auth_form; }
+        explicit_bzero(server_secret_key, crypto_box_SECRETKEYBYTES);
+        // can we decrypt the secret server message (i.e. encrypted by server timestamp)?
+        printf("h\n");
+        
+        // is the timestamp expired?
       } else {
         printf("No cookies\n");
       }
       goto auth_form;
     }
+    good_auth:
 
     // verify access of local_uri
     if(access(uri, R_OK)) goto encountered_problem;
