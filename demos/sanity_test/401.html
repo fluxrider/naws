@@ -19,7 +19,7 @@ function gen_cookie() {
   const keyPromise = scrypt.scrypt(password, salt, N, r, p, 32, update_interface);
   keyPromise.then(function(private_key) {
     // NOTE: it is assumed a derived public key has been registed on the server for this username through other means
-    alert(sodium.to_base64(sodium.crypto_scalarmult_base(private_key), sodium.base64_variants.ORIGINAL));
+    //alert(sodium.to_base64(sodium.crypto_scalarmult_base(private_key), sodium.base64_variants.ORIGINAL));
     // e.g. server can: echo -n 'base64string' | base64 -d > username.key
     
     // cookie = username + encrypt(server_timestamp)

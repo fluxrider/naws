@@ -373,7 +373,7 @@ int main(int argc, char * argv[]) {
         // is username legal? (i.e. no slash allowed)
         if(strchr(cookie_username, '/')) { printf("ERROR AUTH illegal name %s\n", cookie_username); goto auth_form; }
         // do we have a user by this name?
-        char * tmp_buffer = child_stdout_buffer;
+        char * tmp_buffer = child_stdout_buffer + HTTP_200_HEADER_LEN;
         sprintf(tmp_buffer, "users/%s.key", cookie_username);
         if(access(tmp_buffer, R_OK)) { printf("ERROR AUTH user does not exist %s\n", cookie_username); goto auth_form; }
         // load user's public key
@@ -414,6 +414,11 @@ int main(int argc, char * argv[]) {
       goto auth_form;
     }
     good_auth:
+
+    printf("double check\n");
+    printf("uri: %s\n", uri);
+    printf("filename: %s\n", filename);
+    printf("ext: %s\n", ext);
 
     // verify access of local_uri
     if(access(uri, R_OK)) goto encountered_problem;
