@@ -9,7 +9,7 @@
 #include <unistd.h>
 
 int main(int argc, char * argv) {
-  // gen keys
+  // gen asymmetric keys
   if(sodium_init() < 0) { fprintf(stderr, "sodium_init() failed\n"); exit(EXIT_FAILURE); }
   unsigned char secret_key[crypto_box_SECRETKEYBYTES];
   unsigned char public_key[crypto_box_PUBLICKEYBYTES];
@@ -31,6 +31,15 @@ int main(int argc, char * argv) {
       dprintf(file, ", %d", public_key[i]);
     }
     dprintf(file, "])");
+    if(close(file)) { perror("close()"); exit(EXIT_FAILURE); }
+  }
+
+  // store symmetric key in a file
+  {
+    unsigned char symmetric_key[crypto_secretbox_KEYBYTES];
+    randombytes_buf(symmetric_key, crypto_secretbox_KEYBYTES);
+    int file = open("symmetric.key", O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR); if(file == -1) { perror("open()"); exit(EXIT_FAILURE); }
+    ssize_t n = write(file, symmetric_key, crypto_secretbox_KEYBYTES); if(n != crypto_secretbox_KEYBYTES) { if(n == -1) perror("write()"); else fprintf(stderr, "write(): couldn't write whole message, sent only %zu.\n", n); exit(EXIT_FAILURE); }
     if(close(file)) { perror("close()"); exit(EXIT_FAILURE); }
   }
 

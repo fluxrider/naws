@@ -23,6 +23,13 @@ static bool starts_with(const char * s, const char * start) {
   return strncmp(start, s, strlen(start)) == 0;
 }
 
+static void load_file(const char * path, uint8_t * buffer, size_t length, bool securish) {
+  int file = open(path, O_RDONLY); if(file == -1) { perror("open()"); fprintf(stderr, "path %s\n", path); exit(EXIT_FAILURE); }
+  ssize_t n = read(file, buffer, length); if(n == -1) { perror("read()"); fprintf(stderr, "path %s\n", path); exit(EXIT_FAILURE); }
+  if(n != length) { fprintf(stderr, "read(%s) wasn't full length %zu but %zd\n", path, length, n); if(securish) explicit_bzero(buffer, length); exit(EXIT_FAILURE); }
+  if(close(file)) { if(securish) explicit_bzero(buffer, length); perror("close()"); fprintf(stderr, "path %s\n", path); exit(EXIT_FAILURE); }
+}
+
 #define HTTP_404_HEADER "HTTP/1.1 404 Not Found\r\nContent-Type:text/html;charset=utf-8\r\n\r\n"
 #define HTTP_404_HEADER_LEN (sizeof(HTTP_404_HEADER) - 1)
 #define HTTP_500_HEADER "HTTP/1.1 500 Internal Server Error\r\nContent-Type:text/html;charset=utf-8\r\n\r\n"
@@ -360,12 +367,7 @@ int main(int argc, char * argv[]) {
         if(access(tmp_buffer, R_OK)) { printf("ERROR AUTH user does not exist %s\n", cookie_username); goto auth_form; }
         // load user's public key
         unsigned char user_public_key[crypto_box_PUBLICKEYBYTES];
-        {
-          int file = open(tmp_buffer, O_RDONLY); if(file == -1) { perror("open(user.key)"); exit(EXIT_FAILURE); }
-          ssize_t n = read(file, user_public_key, crypto_box_PUBLICKEYBYTES); if(n == -1) { perror("read(user.key)"); exit(EXIT_FAILURE); }
-          if(n != crypto_box_PUBLICKEYBYTES) { fprintf(stderr, "read(crypto_box_PUBLICKEYBYTES)\n"); exit(EXIT_FAILURE); }
-          if(close(file)) { perror("close(user.key)"); exit(EXIT_FAILURE); }
-        }
+        load_file(tmp_buffer, user_public_key, crypto_box_PUBLICKEYBYTES, false);
         // decode base64 nonce + proof
         unsigned char cookie_nonce[crypto_box_NONCEBYTES]; size_t cookie_nonce_len;
         if(sodium_base642bin(cookie_nonce, crypto_box_NONCEBYTES, cookie_nonce_base64, strlen(cookie_nonce_base64), NULL, &cookie_nonce_len, NULL, sodium_base64_VARIANT_ORIGINAL)) { printf("ERROR AUTH sodium_base642bin(cookie_nonce_base64) [%s]\n", cookie_nonce_base64); goto auth_form; }
@@ -374,15 +376,10 @@ int main(int argc, char * argv[]) {
         if(sodium_base642bin(cookie_proof, 1024, cookie_proof_base64, strlen(cookie_proof_base64), NULL, &cookie_proof_len, NULL, sodium_base64_VARIANT_ORIGINAL)) { printf("ERROR AUTH sodium_base642bin(cookie_proof_base64)\n"); goto auth_form; }
         // load server's private key
         unsigned char server_secret_key[crypto_box_SECRETKEYBYTES];
-        {
-          int file = open("secret.key", O_RDONLY); if(file == -1) { perror("open(secret.key)"); exit(EXIT_FAILURE); }
-          ssize_t n = read(file, server_secret_key, crypto_box_SECRETKEYBYTES); if(n == -1) { perror("read(secret.key)"); exit(EXIT_FAILURE); }
-          if(n != crypto_box_SECRETKEYBYTES) { fprintf(stderr, "read(crypto_box_SECRETKEYBYTES)\n"); exit(EXIT_FAILURE); }
-          if(close(file)) { explicit_bzero(server_secret_key, crypto_box_SECRETKEYBYTES); perror("close(secret.key)"); exit(EXIT_FAILURE); }
-        }
+        load_file("secret.key", server_secret_key, crypto_box_SECRETKEYBYTES, true);
         // can we decrypt the proof?
         unsigned char decrypted[1024];
-        if(crypto_box_open_easy(decrypted, cookie_proof, cookie_proof_len, cookie_nonce, user_public_key, server_secret_key)) { explicit_bzero(server_secret_key, crypto_box_SECRETKEYBYTES); perror("WARNING could not decrypt proof. Foulplay or did server change key recently?"); goto auth_form; }
+        if(crypto_box_open_easy(decrypted, cookie_proof, cookie_proof_len, cookie_nonce, user_public_key, server_secret_key)) { explicit_bzero(server_secret_key, crypto_box_SECRETKEYBYTES); printf("WARNING could not decrypt proof. Foulplay or did server change key recently?"); goto auth_form; }
         explicit_bzero(server_secret_key, crypto_box_SECRETKEYBYTES);
         // can we decrypt the secret server message (i.e. encrypted by server timestamp)?
         
@@ -553,7 +550,7 @@ int main(int argc, char * argv[]) {
       const char * from[2];
       const char * to[2];
       from[0] = "SRV_PUB"; to[0] = public_key;
-      from[1] = "SRV_MSG"; to[1] = "new Uint8Array([1,2,3,4,5,6,7,8,9])"; // TODO encrypt date using a symetric key
+      from[1] = "SRV_MSG"; to[1] = "new Uint8Array([1,2,3,4,5,6,7,8,9])"; // TODO encrypt date using a symmetric key
       send_template_file(client, file, from, to, 2);
       if(close(file)) { perror("close(401.html)"); exit(EXIT_FAILURE); }
     } skip_auth_form:
