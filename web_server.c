@@ -18,9 +18,18 @@
 #include <errno.h>
 #include <stdarg.h>
 #include <sodium.h>
+#include <time.h>
 
 static bool starts_with(const char * s, const char * start) {
   return strncmp(start, s, strlen(start)) == 0;
+}
+
+static uint64_t get_time_ns() {
+  struct timespec spec;
+  if(clock_gettime(CLOCK_REALTIME, &spec)) { perror("clock_gettime"); exit(EXIT_FAILURE); }
+  uint64_t ns = spec.tv_nsec;
+  ns += spec.tv_sec * UINT64_C(1000000000);
+  return ns;
 }
 
 static void load_file(const char * path, uint8_t * buffer, size_t length, bool securish) {
@@ -171,6 +180,7 @@ void send_template_file(int socket, int file, const char * from[], const char * 
 
 // main
 int main(int argc, char * argv[]) {
+  srandom(time(0));
   if(argc != 4) { fprintf(stderr, "usage: naws private_port tor_port root-folder\nexample: naws 8888 8889 .\n"); exit(EXIT_FAILURE); }
 
   int sigchld_fd = setup_signalfd(); if(sigchld_fd == -1) { perror("signalfd()"); exit(EXIT_FAILURE); }
@@ -538,19 +548,35 @@ int main(int argc, char * argv[]) {
     // auth form
     goto skip_auth_form; auth_form: {
       printf("WARNING require authentification\n");
-      // read public key
+      // read public key (which is already in javascript Uint8Array declaration format)
       int file = open("public.key", O_RDONLY); if(file == -1) { perror("open(public.key)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(public.key)"); exit(EXIT_FAILURE); }
       char public_key[file_stat.st_size + 1];
       public_key[file_stat.st_size] = '\0';
       ssize_t n = read(file, public_key, file_stat.st_size); if(n != file_stat.st_size) { if(n == -1) perror("read(public.key)"); else fprintf(stderr, "read(public.key): couldn't read whole key\n"); exit(EXIT_FAILURE); }
       if(close(file)) { perror("close(public.key)"); exit(EXIT_FAILURE); }
+      // encode a server message that includes a timestamp of some sort
+      uint64_t ns = get_time_ns() + random() % 1000 * UINT64_C(1000000000); // I fudge the time a bit for unpredictability
+      unsigned char nonce[crypto_secretbox_NONCEBYTES];
+      randombytes_buf(nonce, crypto_secretbox_NONCEBYTES);
+      unsigned char ciphertext[crypto_secretbox_MACBYTES + sizeof(ns)];
+      unsigned char server_symmetric_key[crypto_secretbox_KEYBYTES];
+      load_file("symmetric.key", server_symmetric_key, crypto_secretbox_KEYBYTES, true);
+      crypto_secretbox_easy(ciphertext, (const unsigned char *)&ns, sizeof(ns), nonce, server_symmetric_key);
+      explicit_bzero(server_symmetric_key, crypto_secretbox_KEYBYTES);
+      // convert that to javascript Uint8Array declaration format
+      char * tmp_buffer = child_stdout_buffer;
+      tmp_buffer += sprintf(tmp_buffer, "new Uint8Array([%d", ciphertext[0]);
+      for(int i = 1; i < crypto_secretbox_MACBYTES + sizeof(ns); i++) {
+        tmp_buffer += sprintf(tmp_buffer, ", %d", ciphertext[i]);
+      }
+      tmp_buffer += sprintf(tmp_buffer, "])");
       // send login page
       send_static_header(client, hash_djb2_html);
       file = open("401.html", O_RDONLY); if(file == -1) { perror("open(401.html)"); exit(EXIT_FAILURE); }
       const char * from[2];
       const char * to[2];
       from[0] = "SRV_PUB"; to[0] = public_key;
-      from[1] = "SRV_MSG"; to[1] = "new Uint8Array([1,2,3,4,5,6,7,8,9])"; // TODO encrypt date using a symmetric key
+      from[1] = "SRV_MSG"; to[1] = child_stdout_buffer;
       send_template_file(client, file, from, to, 2);
       if(close(file)) { perror("close(401.html)"); exit(EXIT_FAILURE); }
     } skip_auth_form:
