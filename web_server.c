@@ -1,6 +1,5 @@
 // Copyright 2020 David Lareau. This program is free software under the terms of the GPL-3.0-or-later.
 // gcc web_server.c $(pkg-config --libs --cflags libsodium) && ./a.out demos/sanity_test 8888 8889
-// TODO load libsodium dynamically so that I don't have to compile with support for it (and that users that don't care about public ports don't have to install libsodium)
 #include <unistd.h>
 #include <stdlib.h>
 #include <stdio.h>
