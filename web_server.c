@@ -180,6 +180,7 @@ void send_template_file(int socket, int file, const char * from[], const char * 
 
 // main
 int main(int argc, char * argv[]) {
+  if(setvbuf(stdout, NULL, _IOLBF, 0)) { perror("setvbuf"); exit(EXIT_FAILURE); };
   srandom(time(0));
   if(argc < 3) { fprintf(stderr, "usage: naws root-folder private_port [tor_port]\nexample: naws . 8888 8889\n"); exit(EXIT_FAILURE); }
 
