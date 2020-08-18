@@ -246,11 +246,13 @@ int main(int argc, char * argv[]) {
 
     // allow only the usual private IPv4 addresses
     uint8_t * ip = (uint8_t *)&client_addr.sin_addr.s_addr;
-    printf("ACCESS client_address: %u.%u.%u.%u\n", ip[0], ip[1], ip[2], ip[3]);
     bool allowed_ip = false;
     allowed_ip |= ip[0] == 127 && ip[1] == 0 && ip[2] == 0 && ip[3] == 1;
     if(private_network_client) allowed_ip |= ip[0] == 192 && ip[1] == 168;
-    if(!allowed_ip) goto encountered_problem;
+    if(!allowed_ip) {
+      fprintf(stderr, "client_address %u.%u.%u.%u was denied access (private=%d)\n", ip[0], ip[1], ip[2], ip[3], private_network_client);
+      goto encountered_problem;
+    }
     // TODO would it be possible to behave exactly like if there was no server? filter ip with SO_ATTACH_BPF?
     // TODO if traffic from the internet/tor, turn on HTTPS/AUTH and turn server off on multi failed attempts
 
@@ -258,8 +260,8 @@ int main(int argc, char * argv[]) {
     // TODO firefox keeps sending these fake empty connection. I need to be able to filter them out. They cause 0 length recv.
     ssize_t length = recv(client, &buffer, buffer_capacity, 0); if(length == -1) { perror("recv()"); exit(EXIT_FAILURE); }
     buffer[length] = '\0';
-    printf("recv() %zd bytes\n", length);
-    if(length < 4) goto encountered_problem;
+    if(length < 4) { printf("recv() %zd bytes\n", length); goto encountered_problem; }
+    /*
     if(strncmp(buffer, "GET ", 4)) {
 
       // tls
@@ -296,6 +298,7 @@ int main(int argc, char * argv[]) {
           break; }
       }
     }
+    */
 
     // handle GET
     // get uri and query_string
@@ -336,13 +339,13 @@ int main(int argc, char * argv[]) {
     // figure out filename extension
     const char * ext = strrchr(filename, '.');
     if(!ext) ext = ""; else ext += 1;
-    printf("uri: %s\n", uri);
-    printf("filename: %s\n", filename);
-    printf("ext: %s\n", ext);
+    //printf("uri: %s\n", uri);
+    //printf("filename: %s\n", filename);
+    //printf("ext: %s\n", ext);
     
     // auth
     if(!private_network_client && strcmp(filename, "ricmoo.scrypt.with_libs.js") && strcmp(filename, "sodium.js")) {
-      printf("AUTH\n");
+      //printf("AUTH\n");
       //printf("%s\n", the_rest);
       // TODO parse cookie
       char * cookie_username_base64 = NULL;
@@ -350,14 +353,14 @@ int main(int argc, char * argv[]) {
       char * cookie_nonce_base64 = NULL;
       while(*the_rest) {
         if(starts_with(the_rest, "\nCookie: ")) {
-          printf("Parsing cookie line\n");
+          //printf("Parsing cookie line\n");
           bool last_token = false;
           char * token = the_rest + 9;
           do {
             char * p = token; while(*p && *p != ';' && *p != '\n' && *p != '\r') p++;
             last_token = !*p || *p == '\n' || *p == '\r';
             *p = '\0';
-            printf("cookie token: %s\n", token);
+            //printf("cookie token: %s\n", token);
             if(starts_with(token, "nasm_username=")) cookie_username_base64 = strchr(token, '=');
             else if(starts_with(token, "nasm_proof=")) cookie_proof_base64 = strchr(token, '=');
             else if(starts_with(token, "nasm_proof_nonce=")) cookie_nonce_base64 = strchr(token, '=');
@@ -415,15 +418,12 @@ int main(int argc, char * argv[]) {
         uint64_t two_days_ns = 24 * 60 * 60 * UINT64_C(1000000000);
         if(ns + two_days_ns < get_time_ns()) { printf("Expired time was %" PRIu64 " now is %" PRIu64 "\n", ns, get_time_ns()); goto auth_form; }
         goto good_auth;
+      } else {
+        printf("no cookie found in header\n");
       }
       goto auth_form;
     }
     good_auth:
-
-    printf("double check\n");
-    printf("uri: %s\n", uri);
-    printf("filename: %s\n", filename);
-    printf("ext: %s\n", ext);
 
     // verify access of local_uri
     if(access(uri, R_OK)) goto encountered_problem;
@@ -587,7 +587,7 @@ int main(int argc, char * argv[]) {
       crypto_secretbox_easy(ciphertext, (const unsigned char *)&ns, sizeof(ns), nonce, server_symmetric_key);
       explicit_bzero(server_symmetric_key, crypto_secretbox_KEYBYTES);
       // convert that to javascript Uint8Array declaration format, (with nonce too)
-      char * tmp_buffer = child_stdout_buffer;
+      char * tmp_buffer = child_stdout_buffer + HTTP_200_HEADER_LEN;
       tmp_buffer += sprintf(tmp_buffer, "new Uint8Array([%d", nonce[0]);
       for(int i = 1; i < crypto_secretbox_NONCEBYTES; i++) {
         tmp_buffer += sprintf(tmp_buffer, ", %d", nonce[i]);
