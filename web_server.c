@@ -46,6 +46,21 @@ int setup_signalfd() {
   return signalfd(-1, &mask, SFD_CLOEXEC);
 }
 
+int prep_server_socket(struct pollfd * sockets, size_t * sockets_size, uint16_t port) {
+  int server = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0); if(server == -1) { perror("socket()"); exit(EXIT_FAILURE); }
+  if(setsockopt(server, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int))) { perror("setsockopt()"); exit(EXIT_FAILURE); }
+  if(bind(server, (const struct sockaddr *)&(struct sockaddr_in){AF_INET, htons(port), {INADDR_ANY}}, sizeof(struct sockaddr_in))) {
+    perror("bind(server)");
+    if(port < 1024) fprintf(stderr, "for privileged ports, ensure capability is set\nsudo setcap 'cap_net_bind_service=+ep' /path/to/program\n");
+    exit(EXIT_FAILURE);
+  }
+  if(listen(server, 0)) { perror("listen()"); exit(EXIT_FAILURE); }
+  sockets[*sockets_size].fd = server;
+  sockets[*sockets_size].events = POLLIN;
+  (*sockets_size)++;
+  return server;
+}
+
 // send a file to a socket, but search and replace a few things as we go
 // note: for performance reasons, only the first occurence will be replaced
 // side effect: the arrays from/to will be modified in place for performance reasons as well
@@ -182,42 +197,19 @@ int main(int argc, char * argv[]) {
 
   // args
   if(chdir(argv[1])) { perror("chdir(root)"); exit(EXIT_FAILURE); }
-  uint16_t private_port = strtol(argv[2], &strtol_endptr, 10); if(*strtol_endptr) { fprintf(stderr, "could not parse private port %s", argv[2]); exit(EXIT_FAILURE); }
+  uint16_t private_port = strtol(argv[2], &strtol_endptr, 10); if(*strtol_endptr) { fprintf(stderr, "could not parse private port %s\n", argv[2]); exit(EXIT_FAILURE); }
   uint16_t tor_port = 0;
-  if(argc == 4) { tor_port = strtol(argv[3], &strtol_endptr, 10); if(*strtol_endptr) { fprintf(stderr, "could not parse tor port %s", argv[3]); exit(EXIT_FAILURE); } }
+  if(argc == 4) { tor_port = strtol(argv[3], &strtol_endptr, 10); if(*strtol_endptr) { fprintf(stderr, "could not parse tor port %s\n", argv[3]); exit(EXIT_FAILURE); } }
 
   // setup sockets (for private network port and tor network port)
   struct pollfd sockets[2];
   size_t sockets_size = 0;
-  // in this context, the private server is meant for local network traffic only
-  // no credentials is asked for traffic on this port
-  int private_server = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0); if(private_server == -1) { perror("socket()"); exit(EXIT_FAILURE); }
-  if(setsockopt(private_server, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int))) { perror("setsockopt()"); exit(EXIT_FAILURE); }
-  if(bind(private_server, (const struct sockaddr *)&(struct sockaddr_in){AF_INET, htons(private_port), {INADDR_ANY}}, sizeof(struct sockaddr_in))) {
-    perror("bind(private_server)");
-    if(private_port < 1024) fprintf(stderr, "for privileged ports, ensure capability is set\nsudo setcap 'cap_net_bind_service=+ep' /path/to/program\n");
-    exit(EXIT_FAILURE);
-  }
-  if(listen(private_server, 0)) { perror("listen()"); exit(EXIT_FAILURE); }
-  sockets[sockets_size].fd = private_server;
-  sockets[sockets_size].events = POLLIN;
-  sockets_size++;
+  // in this context, the private server is meant for local network traffic only, no credentials are asked for traffic on this port
+  prep_server_socket(sockets, &sockets_size, private_port);
   // in this context, what I call the tor server is a port that only accepts localhost connections
   // as if torrc is setup like: HiddenServicePort 80 127.0.0.1:12345 where 12345 is the tor_port
   // I later assume end-to-end encryption on this port, so that asking for credentials over http is sensical.
-  if(tor_port) {
-    int tor_server = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0); if(tor_server == -1) { perror("socket()"); exit(EXIT_FAILURE); }
-    if(setsockopt(tor_server, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int))) { perror("setsockopt()"); exit(EXIT_FAILURE); }
-    if(bind(tor_server, (const struct sockaddr *)&(struct sockaddr_in){AF_INET, htons(tor_port), {INADDR_ANY}}, sizeof(struct sockaddr_in))) {
-      perror("bind(tor_server)");
-      if(tor_port < 1024) fprintf(stderr, "for privileged ports, ensure capability is set\nsudo setcap 'cap_net_bind_service=+ep' /path/to/program\n");
-      exit(EXIT_FAILURE);
-    }
-    if(listen(tor_server, 0)) { perror("listen()"); exit(EXIT_FAILURE); }
-    sockets[sockets_size].fd = tor_server;
-    sockets[sockets_size].events = POLLIN;
-    sockets_size++;
-  }
+  if(tor_port) prep_server_socket(sockets, &sockets_size, tor_port);
 
   // listen for clients
   struct sockaddr_in client_addr;
@@ -310,7 +302,7 @@ int main(int argc, char * argv[]) {
         // unexpected end of line
         case '\r':
         case '\n':
-          fprintf(stderr, "WARNING error parsing request-uri\n%s", buffer);
+          fprintf(stderr, "WARNING error parsing request-uri\n%s\n", buffer);
           goto encountered_problem;
         case ' ':
           buffer[i] = '\0';
@@ -400,7 +392,7 @@ int main(int argc, char * argv[]) {
         load_file("naws/secret.key", server_secret_key, crypto_box_SECRETKEYBYTES, true);
         // can we decrypt the proof?
         unsigned char coded_ns_with_nonce[crypto_secretbox_NONCEBYTES + crypto_secretbox_MACBYTES + sizeof(uint64_t)];
-        if(crypto_box_open_easy(coded_ns_with_nonce, cookie_proof, cookie_proof_len, cookie_nonce, user_public_key, server_secret_key)) { explicit_bzero(server_secret_key, crypto_box_SECRETKEYBYTES); fprintf(stderr, "WARNING could not decrypt proof. Foulplay or did server change key recently?"); goto auth_form; }
+        if(crypto_box_open_easy(coded_ns_with_nonce, cookie_proof, cookie_proof_len, cookie_nonce, user_public_key, server_secret_key)) { explicit_bzero(server_secret_key, crypto_box_SECRETKEYBYTES); fprintf(stderr, "WARNING could not decrypt proof. Foulplay or did server change key recently?\n"); goto auth_form; }
         explicit_bzero(server_secret_key, crypto_box_SECRETKEYBYTES);
         // can we decrypt the secret server message (i.e. encrypted by server timestamp)?
         unsigned char * nonce = coded_ns_with_nonce;
@@ -467,7 +459,7 @@ int main(int argc, char * argv[]) {
         query_string_env[cap - 1] = '\0';
         char * const envp[] = { query_string_env, NULL };
         // change working directory to be where the script resides
-        filename[-1] = '\0'; if(uri != filename && chdir(uri)) { perror("CHILD chdir(path)"); fprintf(stderr, "path: %s", uri); exit(EXIT_FAILURE); }
+        filename[-1] = '\0'; if(uri != filename && chdir(uri)) { perror("CHILD chdir(path)"); fprintf(stderr, "path: %s\n", uri); exit(EXIT_FAILURE); }
         switch(hash_djb2_ext) {
           case hash_djb2_: {
             // executable
@@ -629,7 +621,9 @@ int main(int argc, char * argv[]) {
   }
 
   free(child_stdout_buffer);
-  if(shutdown(private_server, SHUT_RDWR)) { perror("WARNING shutdown(private_server)"); }
-  if(close(private_server)) { perror("WARNING close(private_server)"); }
+  for(size_t i = 0; i < sockets_size; i++) {
+    if(shutdown(sockets[i].fd, SHUT_RDWR)) { perror("WARNING shutdown(server)"); }
+    if(close(sockets[i].fd)) { perror("WARNING close(server)"); }
+  }
   return EXIT_SUCCESS;
 }
