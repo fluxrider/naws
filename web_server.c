@@ -344,7 +344,7 @@ int main(int argc, char * argv[]) {
     //printf("ext: %s\n", ext);
     
     // auth
-    if(!private_network_client && strcmp(filename, "ricmoo.scrypt.with_libs.js") && strcmp(filename, "sodium.js")) {
+    if(!private_network_client && strcmp(uri, "ricmoo.scrypt.with_libs.js") && strcmp(uri, "sodium.js")) {
       //printf("AUTH\n");
       //printf("%s\n", the_rest);
       // TODO parse cookie
@@ -383,7 +383,7 @@ int main(int argc, char * argv[]) {
         if(strchr(cookie_username, '/')) { fprintf(stderr, "ERROR AUTH illegal name %s\n", cookie_username); goto auth_form; }
         // do we have a user by this name?
         char * tmp_buffer = child_stdout_buffer + HTTP_200_HEADER_LEN;
-        sprintf(tmp_buffer, "users/%s.key", cookie_username);
+        sprintf(tmp_buffer, "naws/users/%s.key", cookie_username);
         if(access(tmp_buffer, R_OK)) { fprintf(stderr, "ERROR AUTH user does not exist %s\n", cookie_username); goto auth_form; }
         // load user's public key
         unsigned char user_public_key[crypto_box_PUBLICKEYBYTES];
@@ -401,7 +401,7 @@ int main(int argc, char * argv[]) {
         }
         // load server's private key
         unsigned char server_secret_key[crypto_box_SECRETKEYBYTES];
-        load_file("secret.key", server_secret_key, crypto_box_SECRETKEYBYTES, true);
+        load_file("naws/secret.key", server_secret_key, crypto_box_SECRETKEYBYTES, true);
         // can we decrypt the proof?
         unsigned char coded_ns_with_nonce[crypto_secretbox_NONCEBYTES + crypto_secretbox_MACBYTES + sizeof(uint64_t)];
         if(crypto_box_open_easy(coded_ns_with_nonce, cookie_proof, cookie_proof_len, cookie_nonce, user_public_key, server_secret_key)) { explicit_bzero(server_secret_key, crypto_box_SECRETKEYBYTES); fprintf(stderr, "WARNING could not decrypt proof. Foulplay or did server change key recently?"); goto auth_form; }
@@ -411,7 +411,7 @@ int main(int argc, char * argv[]) {
         unsigned char * coded_ns = coded_ns_with_nonce + crypto_secretbox_NONCEBYTES;
         uint64_t ns;
         unsigned char server_symmetric_key[crypto_secretbox_KEYBYTES];
-        load_file("symmetric.key", server_symmetric_key, crypto_secretbox_KEYBYTES, true);
+        load_file("naws/symmetric.key", server_symmetric_key, crypto_secretbox_KEYBYTES, true);
         if(crypto_secretbox_open_easy((unsigned char *)&ns, coded_ns, crypto_secretbox_MACBYTES + sizeof(ns), nonce, server_symmetric_key) != 0) { explicit_bzero(server_symmetric_key, crypto_secretbox_KEYBYTES); fprintf(stderr, "ERROR AUTH Could not decrypt timestamp. Did I change the server symmetric key recently?\n"); goto auth_form; }
         explicit_bzero(server_symmetric_key, crypto_secretbox_KEYBYTES);
         // is the timestamp expired?
@@ -426,7 +426,12 @@ int main(int argc, char * argv[]) {
     good_auth:
 
     // verify access of local_uri
-    if(access(uri, R_OK)) goto encountered_problem;
+    if(access(uri, R_OK)) {
+      // double check it's not a resource from /naws/401/
+      sprintf(child_stdout_buffer + HTTP_200_HEADER_LEN, "naws/401/%s", uri);
+      if(access(child_stdout_buffer + HTTP_200_HEADER_LEN, R_OK)) goto encountered_problem;
+      uri = child_stdout_buffer + HTTP_200_HEADER_LEN;
+    }
     
     // try sending as static file
     const uint32_t hash_djb2_ext = hash_djb2(ext);
@@ -554,9 +559,9 @@ int main(int argc, char * argv[]) {
               if(child_exit == 4) { printf("WARNING child force 404\n"); goto encountered_problem; }
               printf("WARNING encountered problem (stderr=%d exit=%d), replied 500\n", child_has_stderr, child_exit);
               { ssize_t sent = send(client, HTTP_500_HEADER, HTTP_500_HEADER_LEN, MSG_MORE); if(sent != HTTP_500_HEADER_LEN) { if(sent == -1) perror("send()"); else fprintf(stderr, "send(): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
-              int file = open("500.html", O_RDONLY); if(file == -1) { perror("open(500.html)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(500.html)"); exit(EXIT_FAILURE); }
+              int file = open("naws/500.inc", O_RDONLY); if(file == -1) { perror("open(500.inc)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(500.inc)"); exit(EXIT_FAILURE); }
               { ssize_t sent = sendfile(client, file, NULL, file_stat.st_size); if(sent != file_stat.st_size) { if(sent == -1) perror("sendfile()"); else fprintf(stderr, "sendfile(500): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
-              if(close(file)) { perror("close(500.html)"); exit(EXIT_FAILURE); }
+              if(close(file)) { perror("close(500.inc)"); exit(EXIT_FAILURE); }
             }
             // child program success
             else {
@@ -572,7 +577,7 @@ int main(int argc, char * argv[]) {
     goto skip_auth_form; auth_form: {
       printf("WARNING require authentification\n");
       // read public key (which is already in javascript Uint8Array declaration format)
-      int file = open("public.key", O_RDONLY); if(file == -1) { perror("open(public.key)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(public.key)"); exit(EXIT_FAILURE); }
+      int file = open("naws/public.key", O_RDONLY); if(file == -1) { perror("open(public.key)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(public.key)"); exit(EXIT_FAILURE); }
       char public_key[file_stat.st_size + 1];
       public_key[file_stat.st_size] = '\0';
       ssize_t n = read(file, public_key, file_stat.st_size); if(n != file_stat.st_size) { if(n == -1) perror("read(public.key)"); else fprintf(stderr, "read(public.key): couldn't read whole key\n"); exit(EXIT_FAILURE); }
@@ -583,7 +588,7 @@ int main(int argc, char * argv[]) {
       randombytes_buf(nonce, crypto_secretbox_NONCEBYTES);
       unsigned char ciphertext[crypto_secretbox_MACBYTES + sizeof(ns)];
       unsigned char server_symmetric_key[crypto_secretbox_KEYBYTES];
-      load_file("symmetric.key", server_symmetric_key, crypto_secretbox_KEYBYTES, true);
+      load_file("naws/symmetric.key", server_symmetric_key, crypto_secretbox_KEYBYTES, true);
       crypto_secretbox_easy(ciphertext, (const unsigned char *)&ns, sizeof(ns), nonce, server_symmetric_key);
       explicit_bzero(server_symmetric_key, crypto_secretbox_KEYBYTES);
       // convert that to javascript Uint8Array declaration format, (with nonce too)
@@ -598,22 +603,22 @@ int main(int argc, char * argv[]) {
       tmp_buffer += sprintf(tmp_buffer, "])");
       // send login page
       send_static_header(client, hash_djb2_html);
-      file = open("401.html", O_RDONLY); if(file == -1) { perror("open(401.html)"); exit(EXIT_FAILURE); }
+      file = open("naws/401.inc", O_RDONLY); if(file == -1) { perror("open(401.inc)"); exit(EXIT_FAILURE); }
       const char * from[2];
       const char * to[2];
       from[0] = "SRV_PUB"; to[0] = public_key;
-      from[1] = "SRV_MSG"; to[1] = child_stdout_buffer;
+      from[1] = "SRV_MSG"; to[1] = child_stdout_buffer + HTTP_200_HEADER_LEN;
       send_template_file(client, file, from, to, 2);
-      if(close(file)) { perror("close(401.html)"); exit(EXIT_FAILURE); }
+      if(close(file)) { perror("close(401.inc)"); exit(EXIT_FAILURE); }
     } skip_auth_form:
 
     // if any problem arised, do 404 instead
     goto skip_encountered_problem; encountered_problem: {
       printf("WARNING encountered problem, replied 404\n");
       { ssize_t sent = send(client, HTTP_404_HEADER, HTTP_404_HEADER_LEN, MSG_MORE); if(sent != HTTP_404_HEADER_LEN) { if(sent == -1) perror("send()"); else fprintf(stderr, "send(): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
-      int file = open("404.html", O_RDONLY); if(file == -1) { perror("open(404.html)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(404.html)"); exit(EXIT_FAILURE); }
+      int file = open("naws/404.inc", O_RDONLY); if(file == -1) { perror("open(404.inc)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(404.inc)"); exit(EXIT_FAILURE); }
       { ssize_t sent = sendfile(client, file, NULL, file_stat.st_size); if(sent != file_stat.st_size) { if(sent == -1) perror("sendfile()"); else fprintf(stderr, "sendfile(404): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
-      if(close(file)) { perror("close(404.html)"); exit(EXIT_FAILURE); }
+      if(close(file)) { perror("close(404.inc)"); exit(EXIT_FAILURE); }
     } skip_encountered_problem:
 
     // on detection of hacking attempt, kill server
