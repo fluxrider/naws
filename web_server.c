@@ -20,6 +20,8 @@
 #include <time.h>
 #include <inttypes.h>
 
+// -- Utils --
+
 static bool starts_with(const char * s, const char * start) {
   return strncmp(start, s, strlen(start)) == 0;
 }
@@ -27,9 +29,7 @@ static bool starts_with(const char * s, const char * start) {
 static uint64_t get_time_ns() {
   struct timespec spec;
   if(clock_gettime(CLOCK_REALTIME, &spec)) { perror("clock_gettime"); exit(EXIT_FAILURE); }
-  uint64_t ns = spec.tv_nsec;
-  ns += spec.tv_sec * UINT64_C(1000000000);
-  return ns;
+  uint64_t ns = spec.tv_nsec; ns += spec.tv_sec * UINT64_C(1000000000); return ns;
 }
 
 static void load_file(const char * path, uint8_t * buffer, size_t length, bool securish) {
@@ -39,69 +39,10 @@ static void load_file(const char * path, uint8_t * buffer, size_t length, bool s
   if(close(file)) { if(securish) explicit_bzero(buffer, length); perror("close()"); fprintf(stderr, "path %s\n", path); exit(EXIT_FAILURE); }
 }
 
-#define HTTP_404_HEADER "HTTP/1.1 404 Not Found\r\nContent-Type:text/html;charset=utf-8\r\n\r\n"
-#define HTTP_404_HEADER_LEN (sizeof(HTTP_404_HEADER) - 1)
-#define HTTP_500_HEADER "HTTP/1.1 500 Internal Server Error\r\nContent-Type:text/html;charset=utf-8\r\n\r\n"
-#define HTTP_500_HEADER_LEN (sizeof(HTTP_500_HEADER) - 1)
-#define HTTP_200_HEADER "HTTP/1.1 200 OK\r\n"
-#define HTTP_200_HEADER_LEN (sizeof(HTTP_200_HEADER) - 1)
-
-// C workaround to switch on string (i.e. hash them)
-
-uint32_t hash_djb2(const char * s) {
-  uint32_t hash = 5381;
-  while(*s) hash = ((hash << 5) + hash) + *s++;
-  return hash;
-}
-
-#define hash_djb2_css 193488718
-#define hash_djb2_js 5863522
-#define hash_djb2_html 2090341082
-#define hash_djb2_png 193502698
-#define hash_djb2_webp 2090863443
-#define hash_djb2_jpg 193496230
-#define hash_djb2_jpeg 2090408331
-#define hash_djb2_svg 193506229
-#define hash_djb2_epub 2090229169
-#define hash_djb2_mobi 2090514956
-#define hash_djb2_mp4 193499446
-#define hash_djb2_ttf 193507251
-#define hash_djb2_py 5863726
-#define hash_djb2_ 5381
-
-// mime type for various static files
-bool send_static_header(int client, uint32_t hash_djb2_ext) {
-  const char * mime;
-  switch(hash_djb2_ext) {
-    case hash_djb2_css: mime = "text/css"; break;
-    case hash_djb2_js: mime = "application/javascript"; break;
-    case hash_djb2_html: mime = "text/html;charset=utf-8"; break;
-    case hash_djb2_png: mime = "image/png"; break;
-    case hash_djb2_webp: mime = "image/webp"; break;
-    case hash_djb2_jpg:
-    case hash_djb2_jpeg: mime = "image/jpeg"; break;
-    case hash_djb2_svg: mime = "image/svg+xml"; break;
-    case hash_djb2_epub: mime = "application/epub+zip"; break;
-    case hash_djb2_mobi: mime = "application/x-mobipocket-ebook"; break;
-    case hash_djb2_mp4: mime = "video/mp4"; break;
-    case hash_djb2_ttf: mime = "application/x-font-ttf"; break;
-    default: return false;
-  }
-  char buffer[96];
-  size_t length = sprintf(buffer, "HTTP/1.1 200 OK\r\nContent-Type:%s\r\n\r\n", mime);
-  ssize_t sent = send(client, buffer, length, MSG_MORE); if(sent != length) { if(sent == -1) perror("send(send_static_header)"); else fprintf(stderr, "send(send_static_header(%u)): couldn't send whole message, sent only %zu.\n", hash_djb2_ext, sent); exit(EXIT_FAILURE); }
-  return true;
-}
-
 // transform children end signal into a file descriptor (so I can use poll() with it)
 int setup_signalfd() {
-  sigset_t mask;
-  sigemptyset(&mask);
-  sigaddset(&mask, SIGCHLD);
-
-  // block signal
+  sigset_t mask; sigemptyset(&mask); sigaddset(&mask, SIGCHLD);
   if(sigprocmask(SIG_BLOCK, &mask, NULL) == -1) { perror("sigprocmask"); exit(EXIT_FAILURE); }
-
   return signalfd(-1, &mask, SFD_CLOEXEC);
 }
 
@@ -178,17 +119,72 @@ void send_template_file(int socket, int file, const char * from[], const char * 
   ssize_t sent = send(socket, buffer, shifted, 0); if(sent != shifted) { if(sent == -1) perror("send(send_template_file)"); else fprintf(stderr, "send(send_template_file): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); }
 }
 
+// C workaround to switch on string (i.e. hash them)
+uint32_t hash_djb2(const char * s) { uint32_t hash = 5381; while(*s) hash = ((hash << 5) + hash) + *s++; return hash; }
+// static files
+#define hash_djb2_css 193488718
+#define hash_djb2_js 5863522
+#define hash_djb2_html 2090341082
+#define hash_djb2_png 193502698
+#define hash_djb2_webp 2090863443
+#define hash_djb2_jpg 193496230
+#define hash_djb2_jpeg 2090408331
+#define hash_djb2_svg 193506229
+#define hash_djb2_epub 2090229169
+#define hash_djb2_mobi 2090514956
+#define hash_djb2_mp4 193499446
+#define hash_djb2_ttf 193507251
+// program files
+#define hash_djb2_py 5863726
+#define hash_djb2_ 5381
+// anything else gets a 404
+
+// -- Web Server --
+
+// mime type for various static files
+bool send_static_header(int client, uint32_t hash_djb2_ext) {
+  const char * mime;
+  switch(hash_djb2_ext) {
+    case hash_djb2_css: mime = "text/css"; break;
+    case hash_djb2_js: mime = "application/javascript"; break;
+    case hash_djb2_html: mime = "text/html;charset=utf-8"; break;
+    case hash_djb2_png: mime = "image/png"; break;
+    case hash_djb2_webp: mime = "image/webp"; break;
+    case hash_djb2_jpg:
+    case hash_djb2_jpeg: mime = "image/jpeg"; break;
+    case hash_djb2_svg: mime = "image/svg+xml"; break;
+    case hash_djb2_epub: mime = "application/epub+zip"; break;
+    case hash_djb2_mobi: mime = "application/x-mobipocket-ebook"; break;
+    case hash_djb2_mp4: mime = "video/mp4"; break;
+    case hash_djb2_ttf: mime = "application/x-font-ttf"; break;
+    default: return false;
+  }
+  char buffer[96];
+  size_t length = sprintf(buffer, "HTTP/1.1 200 OK\r\nContent-Type:%s\r\n\r\n", mime);
+  ssize_t sent = send(client, buffer, length, MSG_MORE); if(sent != length) { if(sent == -1) perror("send(send_static_header)"); else fprintf(stderr, "send(send_static_header(%u)): couldn't send whole message, sent only %zu.\n", hash_djb2_ext, sent); exit(EXIT_FAILURE); }
+  return true;
+}
+
+#define HTTP_404_HEADER "HTTP/1.1 404 Not Found\r\nContent-Type:text/html;charset=utf-8\r\n\r\n"
+#define HTTP_404_HEADER_LEN (sizeof(HTTP_404_HEADER) - 1)
+#define HTTP_500_HEADER "HTTP/1.1 500 Internal Server Error\r\nContent-Type:text/html;charset=utf-8\r\n\r\n"
+#define HTTP_500_HEADER_LEN (sizeof(HTTP_500_HEADER) - 1)
+#define HTTP_200_HEADER "HTTP/1.1 200 OK\r\n"
+#define HTTP_200_HEADER_LEN (sizeof(HTTP_200_HEADER) - 1)
+
 // main
 int main(int argc, char * argv[]) {
-  if(setvbuf(stdout, NULL, _IOLBF, 0)) { perror("setvbuf"); exit(EXIT_FAILURE); };
-  srandom(time(0));
   if(argc < 3) { fprintf(stderr, "usage: naws root-folder private_port [tor_port]\nexample: naws . 8888 8889\n"); exit(EXIT_FAILURE); }
-
+  if(setvbuf(stdout, NULL, _IOLBF, 0)) { perror("setvbuf"); exit(EXIT_FAILURE); };
   int sigchld_fd = setup_signalfd(); if(sigchld_fd == -1) { perror("signalfd()"); exit(EXIT_FAILURE); }
+  srandom(time(0));
+  char * strtol_endptr;
 
+  // args
   if(chdir(argv[1])) { perror("chdir(root)"); exit(EXIT_FAILURE); }
-  uint16_t private_port = strtol(argv[2], NULL, 10);
-  uint16_t tor_port = argc == 4? strtol(argv[3], NULL, 10) : 0;
+  uint16_t private_port = strtol(argv[2], &strtol_endptr, 10); if(*strtol_endptr) { fprintf(stderr, "could not parse private port %s", argv[2]); exit(EXIT_FAILURE); }
+  uint16_t tor_port = 0;
+  if(argc == 4) { tor_port = strtol(argv[3], &strtol_endptr, 10); if(*strtol_endptr) { fprintf(stderr, "could not parse tor port %s", argv[3]); exit(EXIT_FAILURE); } }
 
   // setup sockets (for private network port and tor network port)
   struct pollfd sockets[2];
