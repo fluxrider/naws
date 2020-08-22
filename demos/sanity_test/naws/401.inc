@@ -19,7 +19,7 @@ function gen_cookie() {
   const keyPromise = scrypt.scrypt(password, salt, N, r, p, 32, update_interface);
   keyPromise.then(function(private_key) {
     // NOTE: it is assumed a derived public key has been registed on the server for this username through other means
-    //alert(sodium.to_base64(sodium.crypto_scalarmult_base(private_key), sodium.base64_variants.ORIGINAL));
+    document.getElementById("public_key").value = sodium.to_base64(sodium.crypto_scalarmult_base(private_key), sodium.base64_variants.ORIGINAL);
     // e.g. server can: echo -n 'base64string' | base64 -d > username.key
     
     // cookie = username + encrypt(server_timestamp)
@@ -47,8 +47,9 @@ function set_cookie(cname, cvalue, exdays) {
 <label for="username">Username:</label>
 <input type="text" id="username" placeholder="e.g. john"/><br/><br/>
 <label for="passphrase">Passphrase:</label>
-<input type="text" id="passphrase" placeholder="e.g. elephant in the room"/><br/><br/>
+<input type="password" id="passphrase" placeholder="e.g. elephant in the room" style="width: 50em;"/><br/><br/>
 <input type="button" id="my_button" value="Generate signed cookie" onclick="gen_cookie();"/><br/><br/>
-<a href="">Try again</a>
+<a href="">Try again</a><br/><br/>
+<input type="text" id="public_key" placeholder="i.e. your public key that should be registered with the server will appear here" style="width: 50em;"/><br/><br/>
 </body>
 </html>
