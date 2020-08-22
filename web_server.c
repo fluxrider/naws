@@ -331,6 +331,9 @@ int main(int argc, char * argv[]) {
     //printf("filename: %s\n", filename);
     //printf("ext: %s\n", ext);
     
+    // a few files in naws (e.g. js) would be normally served. Don't allow poking at private files like that
+    if(starts_with(uri, "naws/")) goto encountered_problem;
+    
     // auth
     if(!private_network_client && strcmp(uri, "ricmoo.scrypt.with_libs.js") && strcmp(uri, "sodium.js")) {
       //printf("AUTH\n");
