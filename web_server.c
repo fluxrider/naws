@@ -292,35 +292,57 @@ int main(int argc, char * argv[]) {
     // get uri and query_string
     char * query_string = NULL;
     char * uri = &buffer[4];
-    int i = 4;
-    while(buffer[i]) {
-      switch(buffer[i]) {
-        // no ".." allowed
-        case '.':
-          if(buffer[i+1] != '.') { i++; break; }
-          // fall through
-        // unexpected end of line
-        case '\r':
-        case '\n':
-          fprintf(stderr, "WARNING error parsing request-uri\n%s\n", buffer);
-          goto encountered_problem;
-        case ' ':
-          buffer[i] = '\0';
-          break;
-        case '?':
-          if(!query_string) {
+    char * the_rest;
+    {
+      int i = 4;
+      while(buffer[i]) {
+        switch(buffer[i]) {
+          // no ".." allowed
+          case '.':
+            if(buffer[i+1] != '.') { i++; break; }
+            // fall through
+          // unexpected end of line
+          case '\r':
+          case '\n':
+            fprintf(stderr, "WARNING error parsing request-uri\n%s\n", buffer);
+            goto encountered_problem;
+          case ' ':
             buffer[i] = '\0';
-            query_string = &buffer[i+1];
-          }
-          // fall through
-        default:
-          i++;
+            break;
+          case '?':
+            if(!query_string) {
+              buffer[i] = '\0';
+              query_string = &buffer[i+1];
+            }
+            // fall through
+          default:
+            i++;
+        }
       }
+      the_rest = &buffer[i+1];
     }
-    char * the_rest = &buffer[i+1];
     if(!query_string) query_string = "";
     printf("ACCESS uri: %s query: %s\n", uri, query_string);
     if(uri[0] != '/') goto encountered_problem;
+    
+    // decode uri in-place
+    {
+      int i = 0;
+      int j = 0;
+      while(uri[i]) {
+        int c = uri[i++];
+        switch(c) {
+          case '+': c = ' '; break;
+          case '%':
+            if(sscanf(&uri[i], "%2x", &c) != 1) { fprintf(stderr, "WARNING error decoding request-uri\n%s\n", buffer); goto encountered_problem; }
+            i += 2;
+            break;
+        }
+        uri[j++] = c;
+      }
+      uri[j] = '\0';
+    }
+    
     char * filename = strrchr(uri, '/') + 1;
     do { uri += 1; } while(uri[0] == '/');
     
