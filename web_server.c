@@ -224,11 +224,11 @@ int main(int argc, char * argv[]) {
     bool private_network_client = false;
     if(sockets[0].revents & POLLIN) {
       printf("ACCESS private network request\n");
-      client = accept(sockets[0].fd, (struct sockaddr *)&client_addr, &(socklen_t){sizeof(struct sockaddr_in)}); if(client == -1) { perror("accept(private)"); exit(EXIT_FAILURE); }
+      client = accept(sockets[0].fd, (struct sockaddr *)&client_addr, &(socklen_t){sizeof(struct sockaddr_in)}); if(client == -1) { perror("accept(private)"); goto abort_client; }
       private_network_client = true;
     } else if(sockets[1].revents & POLLIN) {
       printf("ACCESS tor network request\n");
-      client = accept(sockets[1].fd, (struct sockaddr *)&client_addr, &(socklen_t){sizeof(struct sockaddr_in)}); if(client == -1) { perror("accept(tor)"); exit(EXIT_FAILURE); }
+      client = accept(sockets[1].fd, (struct sockaddr *)&client_addr, &(socklen_t){sizeof(struct sockaddr_in)}); if(client == -1) { perror("accept(tor)"); goto abort_client; }
     }
     if(client == -1) continue;
 
@@ -246,9 +246,9 @@ int main(int argc, char * argv[]) {
 
     // receive
     // TODO firefox keeps sending these fake empty connection. I need to be able to filter them out. They cause 0 length recv.
-    ssize_t length = recv(client, &buffer, buffer_capacity, 0); if(length == -1) { perror("recv()"); exit(EXIT_FAILURE); }
+    ssize_t length = recv(client, &buffer, buffer_capacity, 0); if(length == -1) { perror("recv()"); goto abort_client; }
     buffer[length] = '\0';
-    if(length < 4) { printf("recv() %zd bytes\n", length); goto encountered_problem; }
+    if(length < 4) { printf("recv() %zd bytes\n", length); goto abort_client; }
     /*
     if(strncmp(buffer, "GET ", 4)) {
 
@@ -425,7 +425,7 @@ int main(int argc, char * argv[]) {
     const uint32_t hash_djb2_ext = hash_djb2(ext);
     if(send_static_header(client, hash_djb2_ext)) {
       int file = open(uri, O_RDONLY); if(file == -1) { perror("open(uri)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(uri)"); exit(EXIT_FAILURE); }
-      { ssize_t sent = sendfile(client, file, NULL, file_stat.st_size); if(sent != file_stat.st_size) { if(sent == -1) perror("sendfile(uri)"); else fprintf(stderr, "sendfile(uri): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
+      { ssize_t sent = sendfile(client, file, NULL, file_stat.st_size); if(sent != file_stat.st_size) { if(sent == -1) perror("sendfile(uri)"); else fprintf(stderr, "sendfile(uri): couldn't send whole message, sent only %zu.\n", sent); close(file); goto abort_client; } }
       if(close(file)) { perror("close(uri)"); exit(EXIT_FAILURE); }
     } else {
       // if a program, fork and run
@@ -546,14 +546,14 @@ int main(int argc, char * argv[]) {
               // the child can ask to return 404 instead of 500 using the exit code 4
               if(child_exit == 4) { printf("WARNING child force 404\n"); goto encountered_problem; }
               printf("WARNING encountered problem (stderr=%d exit=%d), replied 500\n", child_has_stderr, child_exit);
-              { ssize_t sent = send(client, HTTP_500_HEADER, HTTP_500_HEADER_LEN, MSG_MORE); if(sent != HTTP_500_HEADER_LEN) { if(sent == -1) perror("send()"); else fprintf(stderr, "send(): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
+              { ssize_t sent = send(client, HTTP_500_HEADER, HTTP_500_HEADER_LEN, MSG_MORE); if(sent != HTTP_500_HEADER_LEN) { if(sent == -1) perror("send()"); else fprintf(stderr, "send(): couldn't send whole message, sent only %zu.\n", sent); goto abort_client; } }
               int file = open("naws/500.inc", O_RDONLY); if(file == -1) { perror("open(500.inc)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(500.inc)"); exit(EXIT_FAILURE); }
-              { ssize_t sent = sendfile(client, file, NULL, file_stat.st_size); if(sent != file_stat.st_size) { if(sent == -1) perror("sendfile()"); else fprintf(stderr, "sendfile(500): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
+              { ssize_t sent = sendfile(client, file, NULL, file_stat.st_size); if(sent != file_stat.st_size) { if(sent == -1) perror("sendfile()"); else fprintf(stderr, "sendfile(500): couldn't send whole message, sent only %zu.\n", sent); close(file); goto abort_client; } }
               if(close(file)) { perror("close(500.inc)"); exit(EXIT_FAILURE); }
             }
             // child program success
             else {
-              ssize_t sent = send(client, child_stdout_buffer, child_stdout_buffer_size, 0); if(sent != child_stdout_buffer_size) { if(sent == -1) perror("send()"); else fprintf(stderr, "send(): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); }
+              ssize_t sent = send(client, child_stdout_buffer, child_stdout_buffer_size, 0); if(sent != child_stdout_buffer_size) { if(sent == -1) perror("send()"); else fprintf(stderr, "send(): couldn't send whole message, sent only %zu.\n", sent); goto abort_client; }
             }
             break;
           }
@@ -603,9 +603,9 @@ int main(int argc, char * argv[]) {
     // if any problem arised, do 404 instead
     goto skip_encountered_problem; encountered_problem: {
       printf("WARNING encountered problem, replied 404\n");
-      { ssize_t sent = send(client, HTTP_404_HEADER, HTTP_404_HEADER_LEN, MSG_MORE); if(sent != HTTP_404_HEADER_LEN) { if(sent == -1) perror("send()"); else fprintf(stderr, "send(): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
+      { ssize_t sent = send(client, HTTP_404_HEADER, HTTP_404_HEADER_LEN, MSG_MORE); if(sent != HTTP_404_HEADER_LEN) { if(sent == -1) perror("send()"); else fprintf(stderr, "send(): couldn't send whole message, sent only %zu.\n", sent); goto abort_client; } }
       int file = open("naws/404.inc", O_RDONLY); if(file == -1) { perror("open(404.inc)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(404.inc)"); exit(EXIT_FAILURE); }
-      { ssize_t sent = sendfile(client, file, NULL, file_stat.st_size); if(sent != file_stat.st_size) { if(sent == -1) perror("sendfile()"); else fprintf(stderr, "sendfile(404): couldn't send whole message, sent only %zu.\n", sent); exit(EXIT_FAILURE); } }
+      { ssize_t sent = sendfile(client, file, NULL, file_stat.st_size); if(sent != file_stat.st_size) { if(sent == -1) perror("sendfile()"); else fprintf(stderr, "sendfile(404): couldn't send whole message, sent only %zu.\n", sent); close(file); goto abort_client; } }
       if(close(file)) { perror("close(404.inc)"); exit(EXIT_FAILURE); }
     } skip_encountered_problem:
 
@@ -615,6 +615,7 @@ int main(int argc, char * argv[]) {
       exit(EXIT_FAILURE);
     } skip_hack:
 
+    abort_client:
     if(shutdown(client, SHUT_RDWR)) { perror("WARNING shutdown(client)"); }
     if(close(client)) { perror("WARNING close(client)"); }
     printf("ACCESS done handling client\n");
