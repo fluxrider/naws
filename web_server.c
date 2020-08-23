@@ -231,6 +231,15 @@ int main(int argc, char * argv[]) {
       client = accept(sockets[1].fd, (struct sockaddr *)&client_addr, &(socklen_t){sizeof(struct sockaddr_in)}); if(client == -1) { perror("accept(tor)"); goto abort_client; }
     }
     if(client == -1) continue;
+    
+    // if there is not data to recv, abort (firefox sends these fake empty connection all the time [speculative]).
+    struct pollfd speculative_filter;
+    speculative_filter.fd = client;
+    speculative_filter.events = POLLIN;
+    int speculative_timeout_ms = 50;
+    int speculative_result = poll(&speculative_filter, 1, speculative_timeout_ms);
+    if(speculative_result == -1) { perror("poll(client)"); goto abort_client; }
+    if(speculative_result == 0) { goto abort_client; }
 
     // allow only the usual private IPv4 addresses
     uint8_t * ip = (uint8_t *)&client_addr.sin_addr.s_addr;
@@ -245,7 +254,6 @@ int main(int argc, char * argv[]) {
     // TODO if traffic from the internet/tor, turn on HTTPS/AUTH and turn server off on multi failed attempts
 
     // receive
-    // TODO firefox keeps sending these fake empty connection. I need to be able to filter them out. They cause 0 length recv.
     ssize_t length = recv(client, &buffer, buffer_capacity, 0); if(length == -1) { perror("recv()"); goto abort_client; }
     buffer[length] = '\0';
     if(length < 4) { printf("recv() %zd bytes\n", length); goto abort_client; }
@@ -640,10 +648,10 @@ int main(int argc, char * argv[]) {
       exit(EXIT_FAILURE);
     } skip_hack:
 
+    printf("ACCESS done handling client\n");
     abort_client:
     if(shutdown(client, SHUT_RDWR)) { perror("WARNING shutdown(client)"); }
     if(close(client)) { perror("WARNING close(client)"); }
-    printf("ACCESS done handling client\n");
   }
 
   free(child_stdout_buffer);
