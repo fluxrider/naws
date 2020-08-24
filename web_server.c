@@ -237,7 +237,7 @@ int main(int argc, char * argv[]) {
     struct pollfd speculative_filter;
     speculative_filter.fd = client;
     speculative_filter.events = POLLIN;
-    int speculative_timeout_ms = 1000;
+    int speculative_timeout_ms = 50;
     int speculative_result = poll(&speculative_filter, 1, speculative_timeout_ms);
     if(speculative_result == -1) { perror("poll(client)"); goto abort_client; }
     if(speculative_result == 0) { goto abort_client; }
