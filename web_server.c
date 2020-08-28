@@ -281,7 +281,6 @@ int main(int argc, char * argv[]) {
     data->private_network_client = private_network_client;
 
     // start thread
-    printf("start thread\n");
     pthread_t thread;
     int ret = pthread_create(&thread, NULL, thread_routine, data); if(ret) { fprintf(stderr, "could not start thread %d %s\n", ret, strerror(ret)); exit(EXIT_FAILURE); }
   }
@@ -298,18 +297,13 @@ void ensure_scratch_and_child_stdout_buffer(uint8_t ** child_stdout_buffer, size
 
 static void * thread_routine(void * vargp) {
   struct thread_data * t = vargp;
-  printf("thread started %d\n", t->thread_id);
   if(!t->buffer) t->buffer = malloc(buffer_capacity + 1);
   uint8_t * buffer = t->buffer;
   const int client = t->client;
 
   // receive
-  ssize_t length = recv(client, &buffer, buffer_capacity, 0); if(length == -1) { perror("recv()"); goto abort_client; }
-  printf("recv() %zd bytes\n", length);
-  printf("cap %d\n", buffer_capacity);
+  ssize_t length = recv(client, buffer, buffer_capacity, 0); if(length == -1) { perror("recv()"); goto abort_client; }
   buffer[length] = '\0';
-  printf("cap %d\n", buffer_capacity);
-  printf("recv() %zd bytes\n", length);
   if(length < 4) { printf("recv() %zd bytes\n", length); goto abort_client; }
   /*
   if(strncmp(buffer, "GET ", 4)) {
