@@ -20,6 +20,7 @@
 #include <time.h>
 #include <inttypes.h>
 #include <pthread.h>
+#include <sys/wait.h>
 
 // -- Utils --
 
@@ -41,10 +42,9 @@ static void load_file(const char * path, uint8_t * buffer, size_t length, bool s
 }
 
 // transform children end signal into a file descriptor (so I can use poll() with it)
-int setup_signalfd() {
+void mute_signals() {
   sigset_t mask; sigemptyset(&mask); sigaddset(&mask, SIGCHLD);
   if(sigprocmask(SIG_BLOCK, &mask, NULL) == -1) { perror("sigprocmask"); exit(EXIT_FAILURE); }
-  return signalfd(-1, &mask, SFD_CLOEXEC);
 }
 
 int prep_server_socket(struct pollfd * sockets, size_t * sockets_size, uint16_t port, int backlog) {
@@ -215,7 +215,7 @@ static int sigchld_fd;
 int main(int argc, char * argv[]) {
   if(argc < 3) { fprintf(stderr, "usage: naws root-folder private_port [tor_port]\nexample: naws . 8888 8889\n"); exit(EXIT_FAILURE); }
   if(setvbuf(stdout, NULL, _IOLBF, 0)) { perror("setvbuf"); exit(EXIT_FAILURE); };
-  sigchld_fd = setup_signalfd(); if(sigchld_fd == -1) { perror("signalfd()"); exit(EXIT_FAILURE); }
+  mute_signals();
   srandom(time(0));
   char * strtol_endptr;
 
@@ -582,25 +582,24 @@ static void * thread_routine(void * vargp) {
     }
     // parent
     if(pid == -1) { perror("fork()"); exit(EXIT_FAILURE); }
-    struct pollfd fds[3];
+    struct pollfd fds[2];
     const int timeout_ms = 1000;
-    fds[0].fd = sigchld_fd;
-    fds[1].fd = pipe_out[0]; if(close(pipe_out[1])) { perror("close(pipe_out)"); exit(EXIT_FAILURE); }
-    fds[2].fd = pipe_err[0]; if(close(pipe_err[1])) { perror("close(pipe_err)"); exit(EXIT_FAILURE); }
-    fds[0].events = fds[1].events = fds[2].events = POLLIN;
+    fds[0].fd = pipe_out[0]; if(close(pipe_out[1])) { perror("close(pipe_out)"); exit(EXIT_FAILURE); }
+    fds[1].fd = pipe_err[0]; if(close(pipe_err[1])) { perror("close(pipe_err)"); exit(EXIT_FAILURE); }
+    fds[0].events = fds[1].events = POLLIN;
     bool child_has_stderr = false;
     size_t child_stdout_buffer_size = HTTP_200_HEADER_LEN;
     while(true) {
-      int polled = poll(fds, 3, timeout_ms); if(polled == -1) { perror("poll()"); exit(EXIT_FAILURE); }
+      int polled = poll(fds, 2, timeout_ms); if(polled == -1) { perror("poll()"); exit(EXIT_FAILURE); }
       if(polled == 0) {
         printf("WARNING t%d poll() timed out\n", t->thread_id);
       } else {
         bool read_something = false;
         // buffer stdout
-        if(fds[1].revents & POLLIN) {
+        if(fds[0].revents & POLLIN) {
           ensure_scratch_and_child_stdout_buffer(&t->child_stdout_buffer, &t->child_stdout_buffer_capacity);
           size_t space_left = t->child_stdout_buffer_capacity - child_stdout_buffer_size;
-          ssize_t n = read(fds[1].fd, &t->child_stdout_buffer[child_stdout_buffer_size], space_left); if(n == -1) { perror("read(child stdout)"); exit(EXIT_FAILURE); }
+          ssize_t n = read(fds[0].fd, &t->child_stdout_buffer[child_stdout_buffer_size], space_left); if(n == -1) { perror("read(child stdout)"); exit(EXIT_FAILURE); }
           if(n == space_left) {
             t->child_stdout_buffer_capacity *= 2;
             t->child_stdout_buffer = realloc(t->child_stdout_buffer, t->child_stdout_buffer_capacity);
@@ -610,37 +609,39 @@ static void * thread_routine(void * vargp) {
           read_something = true;
         }
         // spew stderr
-        if(fds[2].revents & POLLIN) {
-          ssize_t n = read(fds[2].fd, buffer, buffer_capacity); if(n == -1) { perror("read(child stderr)"); exit(EXIT_FAILURE); }
+        if(fds[1].revents & POLLIN) {
+          ssize_t n = read(fds[1].fd, buffer, buffer_capacity); if(n == -1) { perror("read(child stderr)"); exit(EXIT_FAILURE); }
           buffer[n] = '\0';
           printf("WARNING t%d read %zd bytes from child stderr\n%s\n", t->thread_id, n, buffer);
           child_has_stderr = true;
           read_something = true;
         }
         // child process ended (only handle this once stdout/stderr are empty)
-        if(!read_something && fds[0].revents & POLLIN) {
-          struct signalfd_siginfo info;
-          ssize_t n = read(sigchld_fd, &info, sizeof(struct signalfd_siginfo)); if(n != sizeof(struct signalfd_siginfo)) { if(n == -1) perror("read(sigchld_fd)"); else fprintf(stderr, "t%d read(sigchld_fd) wasn't whole\n", t->thread_id); exit(EXIT_FAILURE); }
-          int child_exit = info.ssi_code == CLD_EXITED? info.ssi_status : EXIT_FAILURE;
-          //printf("child exit: %d\n", child_exit);
-          if(close(fds[1].fd)) perror("WARNING close(child stdout)");
-          if(close(fds[2].fd)) perror("WARNING close(child stderr)");
-          // child program failed
-          if(child_has_stderr || child_exit != EXIT_SUCCESS) {
-            // the child can ask to return 404 instead of 500 using the exit code 4
-            if(child_exit == 4) { printf("WARNING t%d child force 404\n", t->thread_id); goto encountered_problem; }
-            printf("WARNING t%d child encountered problem (stderr=%d exit=%d), reply 500\n", t->thread_id, child_has_stderr, child_exit);
-            { ssize_t sent = send(client, HTTP_500_HEADER, HTTP_500_HEADER_LEN, MSG_MORE); if(sent != HTTP_500_HEADER_LEN) { if(sent == -1) perror("send()"); else fprintf(stderr, "t%d send(): couldn't send whole message, sent only %zu.\n", t->thread_id, sent); goto abort_client; } }
-            int file = open("naws/500.inc", O_RDONLY); if(file == -1) { perror("open(500.inc)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(500.inc)"); exit(EXIT_FAILURE); }
-            { ssize_t sent = sendfile(client, file, NULL, file_stat.st_size); if(sent != file_stat.st_size) { if(sent == -1) perror("sendfile()"); else fprintf(stderr, "t%d sendfile(500): couldn't send whole message, sent only %zu.\n", t->thread_id, sent); close(file); goto abort_client; } }
-            if(close(file)) { perror("close(500.inc)"); exit(EXIT_FAILURE); }
+        if(!read_something) {
+          int wstatus;
+          pid_t waited = waitpid(pid, &wstatus, WNOHANG); if(waited == -1) { perror("waitpid()"); exit(EXIT_FAILURE); }
+          if(waited == pid) {
+            int child_exit = WIFEXITED(wstatus)? WEXITSTATUS(wstatus) : EXIT_FAILURE;
+            //printf("child exit: %d\n", child_exit);
+            if(close(fds[0].fd)) perror("WARNING close(child stdout)");
+            if(close(fds[1].fd)) perror("WARNING close(child stderr)");
+            // child program failed
+            if(child_has_stderr || child_exit != EXIT_SUCCESS) {
+              // the child can ask to return 404 instead of 500 using the exit code 4
+              if(child_exit == 4) { printf("WARNING t%d child force 404\n", t->thread_id); goto encountered_problem; }
+              printf("WARNING t%d child encountered problem (stderr=%d exit=%d), reply 500\n", t->thread_id, child_has_stderr, child_exit);
+              { ssize_t sent = send(client, HTTP_500_HEADER, HTTP_500_HEADER_LEN, MSG_MORE); if(sent != HTTP_500_HEADER_LEN) { if(sent == -1) perror("send()"); else fprintf(stderr, "t%d send(): couldn't send whole message, sent only %zu.\n", t->thread_id, sent); goto abort_client; } }
+              int file = open("naws/500.inc", O_RDONLY); if(file == -1) { perror("open(500.inc)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(500.inc)"); exit(EXIT_FAILURE); }
+              { ssize_t sent = sendfile(client, file, NULL, file_stat.st_size); if(sent != file_stat.st_size) { if(sent == -1) perror("sendfile()"); else fprintf(stderr, "t%d sendfile(500): couldn't send whole message, sent only %zu.\n", t->thread_id, sent); close(file); goto abort_client; } }
+              if(close(file)) { perror("close(500.inc)"); exit(EXIT_FAILURE); }
+            }
+            // child program success
+            else {
+              ensure_scratch_and_child_stdout_buffer(&t->child_stdout_buffer, &t->child_stdout_buffer_capacity);
+              ssize_t sent = send(client, t->child_stdout_buffer, child_stdout_buffer_size, 0); if(sent != child_stdout_buffer_size) { if(sent == -1) perror("send()"); else fprintf(stderr, "t%d send(): couldn't send whole message, sent only %zu.\n", t->thread_id, sent); goto abort_client; }
+            }
+            break;
           }
-          // child program success
-          else {
-            ensure_scratch_and_child_stdout_buffer(&t->child_stdout_buffer, &t->child_stdout_buffer_capacity);
-            ssize_t sent = send(client, t->child_stdout_buffer, child_stdout_buffer_size, 0); if(sent != child_stdout_buffer_size) { if(sent == -1) perror("send()"); else fprintf(stderr, "t%d send(): couldn't send whole message, sent only %zu.\n", t->thread_id, sent); goto abort_client; }
-          }
-          break;
         }
       }
     }
