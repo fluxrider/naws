@@ -704,6 +704,5 @@ static void * thread_routine(void * vargp) {
   if(shutdown(client, SHUT_RDWR)) { perror("WARNING shutdown(client)"); }
   if(close(client)) { perror("WARNING close(client)"); }
 
-  printf("t%d done\n", t->thread_id);
   t->in_use = false;
 }

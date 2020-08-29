@@ -18,21 +18,16 @@ Raison D'être: Personal web sites meant for a single user and their immediate f
 	* Programs that return 4 will cause a HTTP 404.
 	* Programs control (and are expected to set) the Content Type.
 	* Hash Bang executables do not need execute permission to run (thus can be stored on non-posix filesystem).
-* Built-in cookie-based public-key-based access authentication (for traffic coming from tor).
+* Built-in cookie-based public-key-based access authentication (for traffic coming through tor).
 
 # Limitations
 
-* Allowing scripts better control over HTTP 500 and 404 comes at a memory and speed price. The output is buffered until it exits and then sent to the client.
+* Allowing scripts better control over HTTP 500 and 404 comes at a memory and speed price. The output is buffered (without limit) until it exits and then sent to the client. Each thread has separate buffers.
 * Partial implementation of HTTP GET (and nothing else).
 * IPv4 (and nothing else).
-* Handles a single connection at a time.
 
 # Backburner (a.k.a. won't do [probably])
 
-* Concurrent connections
-	* but nothing that scales, lets say 10, so I can open in new window a few things and benefit from the parallelism.
-	* current issue with this is memory. I already take a big hit by buffering script output for a single connection.
-		* perhaps I could queue scripts, but allow concurrent static content.
 * HTTPS / TLS
 	* commercial VPN don't usually allow NAT port forwarding, making having a public facing clearnet web site moot.
 		* I find setting up a tor hidden service simpler and it comes with it's own encryption.
