@@ -304,7 +304,7 @@ static void * thread_routine(void * vargp) {
   // receive
   ssize_t length = recv(client, buffer, buffer_capacity, 0); if(length == -1) { perror("recv()"); goto abort_client; }
   buffer[length] = '\0';
-  if(length < 4) { printf("recv() %zd bytes\n", length); goto abort_client; }
+  if(length < 4) { printf("t%d recv() %zd bytes\n", t->thread_id, length); goto abort_client; }
   /*
   if(strncmp(buffer, "GET ", 4)) {
 
@@ -360,7 +360,7 @@ static void * thread_routine(void * vargp) {
         // unexpected end of line
         case '\r':
         case '\n':
-          fprintf(stderr, "WARNING error parsing request-uri\n%s\n", buffer);
+          fprintf(stderr, "WARNING t%d error parsing request-uri\n%s\n", t->thread_id, buffer);
           goto encountered_problem;
         case ' ':
           buffer[i] = '\0';
@@ -378,7 +378,7 @@ static void * thread_routine(void * vargp) {
     the_rest = &buffer[i+1];
   }
   if(!query_string) query_string = "";
-  printf("ACCESS uri: %s query: %s\n", uri, query_string);
+  printf("ACCESS t%d uri: %s query: %s\n", t->thread_id, uri, query_string);
   if(uri[0] != '/') goto encountered_problem;
   
   // decode uri in-place
@@ -390,7 +390,7 @@ static void * thread_routine(void * vargp) {
       switch(c) {
         case '+': c = ' '; break;
         case '%':
-          if(sscanf(&uri[i], "%2x", &c) != 1) { fprintf(stderr, "WARNING error decoding request-uri\n%s\n", buffer); goto encountered_problem; }
+          if(sscanf(&uri[i], "%2x", &c) != 1) { fprintf(stderr, "WARNING t%d error decoding request-uri\n%s\n", t->thread_id, buffer); goto encountered_problem; }
           i += 2;
           break;
       }
@@ -446,27 +446,27 @@ static void * thread_routine(void * vargp) {
       cookie_nonce_base64++;
       // decode base64 username
       unsigned char cookie_username[128+1]; size_t cookie_username_len;
-      if(sodium_base642bin(cookie_username, 128, cookie_username_base64, strlen(cookie_username_base64), NULL, &cookie_username_len, NULL, sodium_base64_VARIANT_ORIGINAL)) { fprintf(stderr, "ERROR AUTH sodium_base642bin(cookie_username)\n"); goto auth_form; }
+      if(sodium_base642bin(cookie_username, 128, cookie_username_base64, strlen(cookie_username_base64), NULL, &cookie_username_len, NULL, sodium_base64_VARIANT_ORIGINAL)) { fprintf(stderr, "ERROR t%d AUTH sodium_base642bin(cookie_username)\n", t->thread_id); goto auth_form; }
       cookie_username[cookie_username_len] = '\0';
       // is username legal? (i.e. no slash allowed)
-      if(strchr(cookie_username, '/')) { fprintf(stderr, "ERROR AUTH illegal name %s\n", cookie_username); goto auth_form; }
+      if(strchr(cookie_username, '/')) { fprintf(stderr, "ERROR t%d AUTH illegal name %s\n", t->thread_id, cookie_username); goto auth_form; }
       // do we have a user by this name?
       ensure_scratch_and_child_stdout_buffer(&t->child_stdout_buffer, &t->child_stdout_buffer_capacity);
       char * tmp_buffer = t->child_stdout_buffer + HTTP_200_HEADER_LEN;
       sprintf(tmp_buffer, "naws/users/%s.key", cookie_username);
-      if(access(tmp_buffer, R_OK)) { fprintf(stderr, "ERROR AUTH user does not exist %s\n", cookie_username); goto auth_form; }
+      if(access(tmp_buffer, R_OK)) { fprintf(stderr, "ERROR t%d AUTH user does not exist %s\n", t->thread_id, cookie_username); goto auth_form; }
       // load user's public key
       unsigned char user_public_key[crypto_box_PUBLICKEYBYTES];
       load_file(tmp_buffer, user_public_key, crypto_box_PUBLICKEYBYTES, false);
       // decode base64 nonce + proof
       unsigned char cookie_nonce[crypto_box_NONCEBYTES]; size_t cookie_nonce_len;
-      if(sodium_base642bin(cookie_nonce, crypto_box_NONCEBYTES, cookie_nonce_base64, strlen(cookie_nonce_base64), NULL, &cookie_nonce_len, NULL, sodium_base64_VARIANT_ORIGINAL)) { fprintf(stderr, "ERROR AUTH sodium_base642bin(cookie_nonce_base64) [%s]\n", cookie_nonce_base64); goto auth_form; }
-      if(cookie_nonce_len != crypto_box_NONCEBYTES) { fprintf(stderr, "ERROR AUTH nonce wrong length\n"); goto auth_form; }
+      if(sodium_base642bin(cookie_nonce, crypto_box_NONCEBYTES, cookie_nonce_base64, strlen(cookie_nonce_base64), NULL, &cookie_nonce_len, NULL, sodium_base64_VARIANT_ORIGINAL)) { fprintf(stderr, "ERROR t%d AUTH sodium_base642bin(cookie_nonce_base64) [%s]\n", t->thread_id, cookie_nonce_base64); goto auth_form; }
+      if(cookie_nonce_len != crypto_box_NONCEBYTES) { fprintf(stderr, "ERROR t%d AUTH nonce wrong length\n", t->thread_id); goto auth_form; }
       size_t coded_proof_size = crypto_box_MACBYTES + crypto_secretbox_NONCEBYTES + crypto_secretbox_MACBYTES + sizeof(uint64_t);
       unsigned char cookie_proof[coded_proof_size]; size_t cookie_proof_len;
-      if(sodium_base642bin(cookie_proof, 1024, cookie_proof_base64, strlen(cookie_proof_base64), NULL, &cookie_proof_len, NULL, sodium_base64_VARIANT_ORIGINAL)) { fprintf(stderr, "ERROR AUTH sodium_base642bin(cookie_proof_base64)\n"); goto auth_form; }
+      if(sodium_base642bin(cookie_proof, 1024, cookie_proof_base64, strlen(cookie_proof_base64), NULL, &cookie_proof_len, NULL, sodium_base64_VARIANT_ORIGINAL)) { fprintf(stderr, "ERROR t%d AUTH sodium_base642bin(cookie_proof_base64)\n", t->thread_id); goto auth_form; }
       if(cookie_proof_len != coded_proof_size) {
-        fprintf(stderr, "ERROR AUTH cookie_proof_len is wrong. Now that is weird. Is %zu not %zu.\n", cookie_proof_len, coded_proof_size);
+        fprintf(stderr, "ERROR t%d AUTH cookie_proof_len is wrong. Now that is weird. Is %zu not %zu.\n", t->thread_id, cookie_proof_len, coded_proof_size);
         goto hacking_attempt_detected;
       }
       // load server's private key
@@ -474,7 +474,7 @@ static void * thread_routine(void * vargp) {
       load_file("naws/secret.key", server_secret_key, crypto_box_SECRETKEYBYTES, true);
       // can we decrypt the proof?
       unsigned char coded_ns_with_nonce[crypto_secretbox_NONCEBYTES + crypto_secretbox_MACBYTES + sizeof(uint64_t)];
-      if(crypto_box_open_easy(coded_ns_with_nonce, cookie_proof, cookie_proof_len, cookie_nonce, user_public_key, server_secret_key)) { explicit_bzero(server_secret_key, crypto_box_SECRETKEYBYTES); fprintf(stderr, "WARNING could not decrypt proof. Foulplay or did server change key recently?\n"); goto auth_form; }
+      if(crypto_box_open_easy(coded_ns_with_nonce, cookie_proof, cookie_proof_len, cookie_nonce, user_public_key, server_secret_key)) { explicit_bzero(server_secret_key, crypto_box_SECRETKEYBYTES); fprintf(stderr, "WARNING t%d could not decrypt proof. Foulplay or did server change key recently?\n", t->thread_id); goto auth_form; }
       explicit_bzero(server_secret_key, crypto_box_SECRETKEYBYTES);
       // can we decrypt the secret server message (i.e. encrypted by server timestamp)?
       unsigned char * nonce = coded_ns_with_nonce;
@@ -482,14 +482,14 @@ static void * thread_routine(void * vargp) {
       uint64_t ns;
       unsigned char server_symmetric_key[crypto_secretbox_KEYBYTES];
       load_file("naws/symmetric.key", server_symmetric_key, crypto_secretbox_KEYBYTES, true);
-      if(crypto_secretbox_open_easy((unsigned char *)&ns, coded_ns, crypto_secretbox_MACBYTES + sizeof(ns), nonce, server_symmetric_key) != 0) { explicit_bzero(server_symmetric_key, crypto_secretbox_KEYBYTES); fprintf(stderr, "ERROR AUTH Could not decrypt timestamp. Did I change the server symmetric key recently?\n"); goto auth_form; }
+      if(crypto_secretbox_open_easy((unsigned char *)&ns, coded_ns, crypto_secretbox_MACBYTES + sizeof(ns), nonce, server_symmetric_key) != 0) { explicit_bzero(server_symmetric_key, crypto_secretbox_KEYBYTES); fprintf(stderr, "ERROR t%d AUTH Could not decrypt timestamp. Did I change the server symmetric key recently?\n", t->thread_id); goto auth_form; }
       explicit_bzero(server_symmetric_key, crypto_secretbox_KEYBYTES);
       // is the timestamp expired?
       uint64_t two_days_ns = 24 * 60 * 60 * UINT64_C(1000000000);
-      if(ns + two_days_ns < get_time_ns()) { printf("Expired time was %" PRIu64 " now is %" PRIu64 "\n", ns, get_time_ns()); goto auth_form; }
+      if(ns + two_days_ns < get_time_ns()) { printf("t%d Expired time was %" PRIu64 " now is %" PRIu64 "\n", t->thread_id, ns, get_time_ns()); goto auth_form; }
       goto good_auth;
     } else {
-      printf("no cookie found in header\n");
+      printf("t%d no cookie found in header\n", t->thread_id);
     }
     goto auth_form;
   }
@@ -508,7 +508,7 @@ static void * thread_routine(void * vargp) {
   const uint32_t hash_djb2_ext = hash_djb2(ext);
   if(send_static_header(client, hash_djb2_ext)) {
     int file = open(uri, O_RDONLY); if(file == -1) { perror("open(uri)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(uri)"); exit(EXIT_FAILURE); }
-    { ssize_t sent = sendfile(client, file, NULL, file_stat.st_size); if(sent != file_stat.st_size) { if(sent == -1) perror("sendfile(uri)"); else fprintf(stderr, "sendfile(uri): couldn't send whole message, sent only %zu.\n", sent); close(file); goto abort_client; } }
+    { ssize_t sent = sendfile(client, file, NULL, file_stat.st_size); if(sent != file_stat.st_size) { if(sent == -1) perror("sendfile(uri)"); else fprintf(stderr, "t%d sendfile(uri): couldn't send whole message, sent only %zu.\n", t->thread_id, sent); close(file); goto abort_client; } }
     if(close(file)) { perror("close(uri)"); exit(EXIT_FAILURE); }
   } else {
     // if a program, fork and run
@@ -542,7 +542,7 @@ static void * thread_routine(void * vargp) {
       query_string_env[cap - 1] = '\0';
       char * const envp[] = { query_string_env, NULL };
       // change working directory to be where the script resides
-      filename[-1] = '\0'; if(uri != filename && chdir(uri)) { perror("CHILD chdir(path)"); fprintf(stderr, "path: %s\n", uri); exit(EXIT_FAILURE); }
+      filename[-1] = '\0'; if(uri != filename && chdir(uri)) { perror("CHILD chdir(path)"); fprintf(stderr, "CHILD t%d path: %s\n", t->thread_id, uri); exit(EXIT_FAILURE); }
       switch(hash_djb2_ext) {
         case hash_djb2_: {
           // executable
@@ -556,8 +556,8 @@ static void * thread_routine(void * vargp) {
             char hash_bang[1025];
             ssize_t n = read(file, hash_bang, 1024); if(n == -1) { perror("CHILD read(hash_bang)"); exit(EXIT_FAILURE); }
             if(close(file)) { perror("CHILD WARNING close(non-executable-program)"); }
-            if(n < 2) { fprintf(stderr, "CHILD read(hash_bang) wasn't big enough for hash bang\n"); exit(EXIT_FAILURE); }
-            if(hash_bang[0] != '#' || hash_bang[1] != '!') { fprintf(stderr, "CHILD not hash bang\n"); exit(EXIT_FAILURE); }
+            if(n < 2) { fprintf(stderr, "CHILD t%d read(hash_bang) wasn't big enough for hash bang\n", t->thread_id); exit(EXIT_FAILURE); }
+            if(hash_bang[0] != '#' || hash_bang[1] != '!') { fprintf(stderr, "CHILD t%d not hash bang\n", t->thread_id); exit(EXIT_FAILURE); }
             hash_bang[n] = '\0';
             char * line_sep = &hash_bang[2];
             char * hash_bang_line = strsep(&line_sep, "\r\n");
@@ -593,7 +593,7 @@ static void * thread_routine(void * vargp) {
     while(true) {
       int polled = poll(fds, 3, timeout_ms); if(polled == -1) { perror("poll()"); exit(EXIT_FAILURE); }
       if(polled == 0) {
-        printf("WARNING poll() timed out\n");
+        printf("WARNING t%d poll() timed out\n", t->thread_id);
       } else {
         bool read_something = false;
         // buffer stdout
@@ -604,7 +604,7 @@ static void * thread_routine(void * vargp) {
           if(n == space_left) {
             t->child_stdout_buffer_capacity *= 2;
             t->child_stdout_buffer = realloc(t->child_stdout_buffer, t->child_stdout_buffer_capacity);
-            printf("INFO grew thread %d child stdout buffer to %zu\n", t->thread_id, t->child_stdout_buffer_capacity);
+            printf("INFO t%d grew child stdout buffer to %zu\n", t->thread_id, t->child_stdout_buffer_capacity);
           }
           child_stdout_buffer_size += n;
           read_something = true;
@@ -613,14 +613,14 @@ static void * thread_routine(void * vargp) {
         if(fds[2].revents & POLLIN) {
           ssize_t n = read(fds[2].fd, buffer, buffer_capacity); if(n == -1) { perror("read(child stderr)"); exit(EXIT_FAILURE); }
           buffer[n] = '\0';
-          printf("WARNING read %zd bytes from child stderr\n%s\n", n, buffer);
+          printf("WARNING t%d read %zd bytes from child stderr\n%s\n", t->thread_id, n, buffer);
           child_has_stderr = true;
           read_something = true;
         }
         // child process ended (only handle this once stdout/stderr are empty)
         if(!read_something && fds[0].revents & POLLIN) {
           struct signalfd_siginfo info;
-          ssize_t n = read(sigchld_fd, &info, sizeof(struct signalfd_siginfo)); if(n != sizeof(struct signalfd_siginfo)) { if(n == -1) perror("read(sigchld_fd)"); else fprintf(stderr, "read(sigchld_fd) wasn't whole\n"); exit(EXIT_FAILURE); }
+          ssize_t n = read(sigchld_fd, &info, sizeof(struct signalfd_siginfo)); if(n != sizeof(struct signalfd_siginfo)) { if(n == -1) perror("read(sigchld_fd)"); else fprintf(stderr, "t%d read(sigchld_fd) wasn't whole\n", t->thread_id); exit(EXIT_FAILURE); }
           int child_exit = info.ssi_code == CLD_EXITED? info.ssi_status : EXIT_FAILURE;
           //printf("child exit: %d\n", child_exit);
           if(close(fds[1].fd)) perror("WARNING close(child stdout)");
@@ -628,17 +628,17 @@ static void * thread_routine(void * vargp) {
           // child program failed
           if(child_has_stderr || child_exit != EXIT_SUCCESS) {
             // the child can ask to return 404 instead of 500 using the exit code 4
-            if(child_exit == 4) { printf("WARNING child force 404\n"); goto encountered_problem; }
-            printf("WARNING encountered problem (stderr=%d exit=%d), replied 500\n", child_has_stderr, child_exit);
-            { ssize_t sent = send(client, HTTP_500_HEADER, HTTP_500_HEADER_LEN, MSG_MORE); if(sent != HTTP_500_HEADER_LEN) { if(sent == -1) perror("send()"); else fprintf(stderr, "send(): couldn't send whole message, sent only %zu.\n", sent); goto abort_client; } }
+            if(child_exit == 4) { printf("WARNING t%d child force 404\n", t->thread_id); goto encountered_problem; }
+            printf("WARNING t%d child encountered problem (stderr=%d exit=%d), reply 500\n", t->thread_id, child_has_stderr, child_exit);
+            { ssize_t sent = send(client, HTTP_500_HEADER, HTTP_500_HEADER_LEN, MSG_MORE); if(sent != HTTP_500_HEADER_LEN) { if(sent == -1) perror("send()"); else fprintf(stderr, "t%d send(): couldn't send whole message, sent only %zu.\n", t->thread_id, sent); goto abort_client; } }
             int file = open("naws/500.inc", O_RDONLY); if(file == -1) { perror("open(500.inc)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(500.inc)"); exit(EXIT_FAILURE); }
-            { ssize_t sent = sendfile(client, file, NULL, file_stat.st_size); if(sent != file_stat.st_size) { if(sent == -1) perror("sendfile()"); else fprintf(stderr, "sendfile(500): couldn't send whole message, sent only %zu.\n", sent); close(file); goto abort_client; } }
+            { ssize_t sent = sendfile(client, file, NULL, file_stat.st_size); if(sent != file_stat.st_size) { if(sent == -1) perror("sendfile()"); else fprintf(stderr, "t%d sendfile(500): couldn't send whole message, sent only %zu.\n", t->thread_id, sent); close(file); goto abort_client; } }
             if(close(file)) { perror("close(500.inc)"); exit(EXIT_FAILURE); }
           }
           // child program success
           else {
             ensure_scratch_and_child_stdout_buffer(&t->child_stdout_buffer, &t->child_stdout_buffer_capacity);
-            ssize_t sent = send(client, t->child_stdout_buffer, child_stdout_buffer_size, 0); if(sent != child_stdout_buffer_size) { if(sent == -1) perror("send()"); else fprintf(stderr, "send(): couldn't send whole message, sent only %zu.\n", sent); goto abort_client; }
+            ssize_t sent = send(client, t->child_stdout_buffer, child_stdout_buffer_size, 0); if(sent != child_stdout_buffer_size) { if(sent == -1) perror("send()"); else fprintf(stderr, "t%d send(): couldn't send whole message, sent only %zu.\n", t->thread_id, sent); goto abort_client; }
           }
           break;
         }
@@ -648,12 +648,12 @@ static void * thread_routine(void * vargp) {
 
   // auth form
   goto skip_auth_form; auth_form: {
-    printf("WARNING require authentification\n");
+    printf("WARNING t%d require authentification\n", t->thread_id);
     // read public key (which is already in javascript Uint8Array declaration format)
     int file = open("naws/public.key", O_RDONLY); if(file == -1) { perror("open(public.key)"); exit(EXIT_FAILURE); } struct stat file_stat; if(fstat(file, &file_stat)) { perror("fstat(public.key)"); exit(EXIT_FAILURE); }
     char public_key[file_stat.st_size + 1];
     public_key[file_stat.st_size] = '\0';
-    ssize_t n = read(file, public_key, file_stat.st_size); if(n != file_stat.st_size) { if(n == -1) perror("read(public.key)"); else fprintf(stderr, "read(public.key): couldn't read whole key\n"); exit(EXIT_FAILURE); }
+    ssize_t n = read(file, public_key, file_stat.st_size); if(n != file_stat.st_size) { if(n == -1) perror("read(public.key)"); else fprintf(stderr, "t%d read(public.key): couldn't read whole key\n", t->thread_id); exit(EXIT_FAILURE); }
     if(close(file)) { perror("close(public.key)"); exit(EXIT_FAILURE); }
     // encode a server message that includes a timestamp of some sort
     uint64_t ns = get_time_ns() + random() % 1000 * UINT64_C(1000000000); // I fudge the time a bit for unpredictability
@@ -688,20 +688,21 @@ static void * thread_routine(void * vargp) {
 
   // if any problem arised, do 404 instead
   goto skip_encountered_problem; encountered_problem: {
-    printf("WARNING encountered problem, replied 404\n");
+    printf("WARNING t%d encountered problem, replied 404\n", t->thread_id);
     if(!do404(client)) goto abort_client;
   } skip_encountered_problem:
 
   // on detection of hacking attempt, kill server
   goto skip_hack; hacking_attempt_detected: {
-    printf("Hacking attempt detected. Over and out.\n");
+    printf("t%d Hacking attempt detected. Over and out.\n", t->thread_id);
     exit(EXIT_FAILURE);
   } skip_hack:
 
-  printf("ACCESS done handling client\n");
+  printf("ACCESS t%d done handling client\n", t->thread_id);
   abort_client:
   if(shutdown(client, SHUT_RDWR)) { perror("WARNING shutdown(client)"); }
   if(close(client)) { perror("WARNING close(client)"); }
 
+  printf("t%d done\n", t->thread_id);
   t->in_use = false;
 }
