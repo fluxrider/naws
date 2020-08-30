@@ -283,6 +283,7 @@ int main(int argc, char * argv[]) {
     // start thread
     pthread_t thread;
     int ret = pthread_create(&thread, NULL, thread_routine, data); if(ret) { fprintf(stderr, "could not start thread %d %s\n", ret, strerror(ret)); exit(EXIT_FAILURE); }
+    ret = pthread_detach(thread); if(ret) { fprintf(stderr, "could not detach thread %d %s\n", ret, strerror(ret)); exit(EXIT_FAILURE); }
   }
 
   return EXIT_SUCCESS;
