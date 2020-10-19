@@ -150,6 +150,7 @@ uint32_t hash_djb2(const char * s) { uint32_t hash = 5381; while(*s) hash = ((ha
 #define hash_djb2_mobi 2090514956
 #define hash_djb2_mp4 193499446
 #define hash_djb2_ttf 193507251
+#define hash_djb2_txt 193507397
 // program files
 #define hash_djb2_py 5863726
 #define hash_djb2_ 5381
@@ -173,6 +174,7 @@ bool send_static_header(int client, uint32_t hash_djb2_ext) {
     case hash_djb2_mobi: mime = "application/x-mobipocket-ebook"; break;
     case hash_djb2_mp4: mime = "video/mp4"; break;
     case hash_djb2_ttf: mime = "application/x-font-ttf"; break;
+    case hash_djb2_txt: mime = "text/plain"; break;
     default: return false;
   }
   char buffer[96];
