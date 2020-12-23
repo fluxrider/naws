@@ -26,6 +26,7 @@ int main(int argc, char * argv) {
   p("mp4");
   p("ttf");
   p("txt");
+  p("ogg");
 
   p("py");
   p("");
